@@ -37,11 +37,11 @@ class ImageFailure:
 
     @property
     def switch_account(self) -> bool:
-        return self.outcome == "failure"
+        return self.code != "image_storage_failed" and self.outcome == "failure"
 
     @property
     def verify_account(self) -> bool:
-        return self.outcome == "failure"
+        return self.code != "image_storage_failed" and self.outcome == "failure"
 
     @property
     def account_failure(self) -> bool:
@@ -123,6 +123,9 @@ FAILURE_POLICIES: dict[str, FailurePolicy] = {
     ),
     "image_download_failed": FailurePolicy(
         "delivery", None, False, 502, "server_error",
+    ),
+    "image_storage_failed": FailurePolicy(
+        "storage", None, True, 502, "server_error",
     ),
     "task_interrupted": FailurePolicy(
         "request", None, False, 503, "server_error",

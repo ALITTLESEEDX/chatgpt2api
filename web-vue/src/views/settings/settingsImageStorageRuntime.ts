@@ -16,10 +16,10 @@ export function useSettingsImageStorageRuntime(options: SettingsImageStorageRunt
   const confirmDialog = useConfirmDialog()
 
   async function testImageStorageConnection() {
-    if (!options.requireSavedSettings('测试 WebDAV')) return
+    if (!options.requireSavedSettings('测试远程存储')) return
     const confirmed = await confirmDialog.ask({
-      title: '确认测试 WebDAV',
-      message: '即将使用已保存的图片存储配置发起 WebDAV 连接测试，可能访问外部存储服务。是否继续？',
+      title: '确认测试远程存储',
+      message: '即将使用已保存的图片存储配置发起连接测试，可能访问外部存储服务。是否继续？',
       confirmText: '开始测试',
       cancelText: '取消',
     })
@@ -30,10 +30,10 @@ export function useSettingsImageStorageRuntime(options: SettingsImageStorageRunt
     try {
       const response = await settingsApi.testImageStorage()
       imageStorageTestResult.value = response.result
-      if (response.result.ok) toast.success('WebDAV 测试通过')
-      else toast.warning(response.result.error || 'WebDAV 测试失败')
+      if (response.result.ok) toast.success('远程存储测试通过')
+      else toast.warning(response.result.error || '远程存储测试失败')
     } catch (error) {
-      const message = errorMessage(error, 'WebDAV 测试失败')
+      const message = errorMessage(error, '远程存储测试失败')
       imageStorageTestResult.value = { ok: false, error: message }
       toast.error(message)
     } finally {
@@ -45,7 +45,7 @@ export function useSettingsImageStorageRuntime(options: SettingsImageStorageRunt
     if (!options.requireSavedSettings('同步本地图片')) return
     const confirmed = await confirmDialog.ask({
       title: '确认同步图片存储',
-      message: '即将扫描本地图片并同步到已配置的 WebDAV 存储，可能产生外部上传流量。是否继续？',
+      message: '即将扫描本地图片并同步到已配置的远程存储，可能产生外部上传流量。是否继续？',
       confirmText: '开始同步',
       cancelText: '取消',
     })

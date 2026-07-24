@@ -18,6 +18,7 @@ export interface GalleryFile {
   storage: string
   local: boolean
   webdav: boolean
+  s3: boolean
   width: number | null
   height: number | null
 }
@@ -217,9 +218,10 @@ function mapFile(item: BackendImageItem, retentionDays: number): GalleryFile {
     expired: expiry.expired,
     expires_in_seconds: expiry.expires_in_seconds,
     tags: normalizeTags(item.tags),
-    storage: cleanString(item.storage || (item.webdav ? (item.local ? 'both' : 'webdav') : 'local')),
+    storage: cleanString(item.storage || (item.s3 ? (item.local ? 'local_s3' : 's3') : (item.webdav ? (item.local ? 'both' : 'webdav') : 'local'))),
     local: Boolean(item.local ?? true),
     webdav: Boolean(item.webdav ?? false),
+    s3: Boolean(item.s3 ?? false),
     width: Number.isFinite(Number(item.width)) ? Number(item.width) : null,
     height: Number.isFinite(Number(item.height)) ? Number(item.height) : null,
   }

@@ -14,6 +14,7 @@ from PIL import Image
 
 from services.config import DATA_DIR, config
 from services.json_file import read_json_object, write_json_file
+from services.r2_client import CloudflareR2Client, R2Error
 from utils.timezone import beijing_datetime_from_timestamp, beijing_now, beijing_now_str
 
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
@@ -164,6 +165,28 @@ class WebDAVClient:
             self.session.close()
 
 
+def _r2_settings(settings: dict[str, object]) -> dict[str, object]:
+    return {
+        "account_id": settings.get("s3_account_id"),
+        "access_key_id": settings.get("s3_access_key_id"),
+        "secret_access_key": settings.get("s3_secret_access_key"),
+        "bucket": settings.get("s3_bucket"),
+        "prefix": settings.get("s3_prefix"),
+    }
+
+
+def _storage_name(*, local: bool, webdav: bool, s3: bool) -> str:
+    if local and s3:
+        return "local_s3"
+    if local and webdav:
+        return "both"
+    if s3:
+        return "s3"
+    if webdav:
+        return "webdav"
+    return "local"
+
+
 class ImageStorageService:
     def __init__(self, index_file: Path = IMAGE_INDEX_FILE):
         self.index_file = index_file
@@ -207,13 +230,15 @@ class ImageStorageService:
         config.cleanup_old_images()
         rel = self.make_relative_path(image_data)
         mode = self.mode()
-        if mode not in {"local", "webdav", "both"}:
+        if mode not in {"local", "webdav", "both", "s3", "local_s3"}:
             mode = "local"
         stored_local = False
         stored_webdav = False
+        stored_s3 = False
         remote_url = ""
+        s3_key = ""
 
-        if mode in {"local", "both"}:
+        if mode in {"local", "both", "local_s3"}:
             path = _local_image_path(rel)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(image_data)
@@ -223,6 +248,17 @@ class ImageStorageService:
             remote_url = WebDAVClient(self.settings()).put(rel, image_data)
             stored_webdav = True
 
+        if mode in {"s3", "local_s3"}:
+            client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+            try:
+                uploaded = client.upload_bytes(rel, image_data, content_type="image/png")
+                s3_key = str(uploaded.get("key") or "")
+                stored_s3 = True
+            except R2Error as exc:
+                raise ImageStorageError(str(exc)) from exc
+            finally:
+                client.close()
+
         dimensions = _image_dimensions(image_data)
         item = {
             "rel": rel,
@@ -231,9 +267,11 @@ class ImageStorageService:
             "date": "-".join(rel.split("/")[:3]),
             "size": len(image_data),
             "created_at": _now_iso(),
-            "storage": "both" if stored_local and stored_webdav else ("webdav" if stored_webdav else "local"),
+            "storage": _storage_name(local=stored_local, webdav=stored_webdav, s3=stored_s3),
             "local": stored_local,
             "webdav": stored_webdav,
+            "s3": stored_s3,
+            "s3_key": s3_key,
             "remote_url": remote_url,
         }
         if dimensions:
@@ -254,6 +292,15 @@ class ImageStorageService:
         item = self._load_clean_index().get(safe_rel, {})
         if item.get("webdav"):
             return WebDAVClient(self.settings()).get(safe_rel)
+        if item.get("s3"):
+            client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+            try:
+                key = _clean(item.get("s3_key"))
+                return client.download_bytes(key or safe_rel, include_prefix=bool(key))
+            except R2Error as exc:
+                raise ImageStorageError(str(exc)) from exc
+            finally:
+                client.close()
         raise HTTPException(status_code=404, detail="image not found")
 
     def exists(self, rel: str) -> bool:
@@ -263,7 +310,7 @@ class ImageStorageService:
         if _local_image_path(safe_rel).is_file():
             return True
         item = self._load_clean_index().get(safe_rel, {})
-        return bool(item.get("webdav"))
+        return bool(item.get("webdav") or item.get("s3"))
 
     def has_local(self, rel: str) -> bool:
         safe_rel = _safe_relative_path(rel)
@@ -304,6 +351,7 @@ class ImageStorageService:
                         "storage": "local",
                         "local": True,
                         "webdav": False,
+                        "s3": False,
                         **({"width": dimensions[0], "height": dimensions[1]} if dimensions else {}),
                     }
                     changed = True
@@ -317,11 +365,12 @@ class ImageStorageService:
                 if verify_existing:
                     local = _local_image_path(rel).is_file()
                     webdav = bool(item.get("webdav"))
-                    if not local and not webdav:
+                    s3 = bool(item.get("s3"))
+                    if not local and not webdav and not s3:
                         indexed.pop(rel, None)
                         changed = True
                         continue
-                    storage = "both" if local and webdav else ("webdav" if webdav else "local")
+                    storage = _storage_name(local=local, webdav=webdav, s3=s3)
                     if item.get("local") != local or item.get("storage") != storage:
                         item = {
                             **item,
@@ -362,6 +411,16 @@ class ImageStorageService:
                 except ImageStorageError:
                     if not removed:
                         raise
+            if item.get("s3"):
+                client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+                try:
+                    key = _clean(item.get("s3_key"))
+                    removed = client.delete_object(key or safe_rel, include_prefix=bool(key)) or removed
+                except R2Error as exc:
+                    if not removed:
+                        raise ImageStorageError(str(exc)) from exc
+                finally:
+                    client.close()
             if safe_rel in items:
                 items.pop(safe_rel, None)
                 self._save_index(items)
@@ -369,25 +428,33 @@ class ImageStorageService:
 
     def sync_all(self) -> dict[str, int]:
         settings = self.settings()
-        if self.mode() not in {"webdav", "both"}:
-            raise ImageStorageError("WebDAV 图片存储未启用")
+        mode = self.mode()
+        if mode not in {"webdav", "both", "s3", "local_s3"}:
+            raise ImageStorageError("远程图片存储未启用")
+        use_s3 = mode in {"s3", "local_s3"}
         uploaded = 0
         skipped = 0
         failed = 0
         with self._index_lock:
             items = self._load_clean_index()
-            client = WebDAVClient(settings)
+            client = CloudflareR2Client(_r2_settings(settings), object_label="图片") if use_s3 else WebDAVClient(settings)
             for path in sorted(config.images_dir.rglob("*")):
                 if not path.is_file() or not _is_image_rel(path.name):
                     continue
                 rel = path.relative_to(config.images_dir).as_posix()
                 item = items.get(rel, {})
-                if item.get("webdav"):
+                if item.get("s3" if use_s3 else "webdav"):
                     skipped += 1
                     continue
                 try:
                     payload = path.read_bytes()
-                    remote_url = client.put(rel, payload)
+                    if use_s3:
+                        result = client.upload_bytes(rel, payload, content_type="image/png")
+                        remote_url = ""
+                        s3_key = str(result.get("key") or "")
+                    else:
+                        remote_url = client.put(rel, payload)
+                        s3_key = ""
                     dimensions = _image_dimensions(payload)
                     items[rel] = {
                         **item,
@@ -397,19 +464,38 @@ class ImageStorageService:
                         "date": "-".join(rel.split("/")[:3]) if len(rel.split("/")) >= 4 else _mtime_date(path),
                         "size": len(payload),
                         "created_at": str(item.get("created_at") or _mtime_datetime(path)),
-                        "storage": "both",
+                        "storage": _storage_name(local=True, webdav=not use_s3, s3=use_s3),
                         "local": True,
-                        "webdav": True,
+                        "webdav": not use_s3,
+                        "s3": use_s3,
+                        "s3_key": s3_key,
                         "remote_url": remote_url,
                         **({"width": dimensions[0], "height": dimensions[1]} if dimensions else {}),
                     }
                     uploaded += 1
                 except Exception:
                     failed += 1
+            if use_s3:
+                client.close()
             self._save_index(items)
         return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
 
-    def test_webdav(self) -> dict[str, object]:
+    def test_storage(self) -> dict[str, object]:
+        if self.mode() in {"s3", "local_s3"}:
+            client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+            try:
+                client.validate()
+                result = client.upload_bytes(
+                    ".chatgpt2api_r2_test.txt",
+                    b"chatgpt2api r2 test\n",
+                    content_type="text/plain",
+                )
+                client.delete_object(str(result["key"]), include_prefix=True)
+                return {"ok": True, "status": 200, "error": None}
+            except Exception as exc:
+                return {"ok": False, "status": 0, "error": str(exc) or exc.__class__.__name__}
+            finally:
+                client.close()
         return WebDAVClient(self.settings()).test()
 
 

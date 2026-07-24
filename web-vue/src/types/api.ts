@@ -138,11 +138,16 @@ export interface Settings {
   }
   image_storage?: {
     enabled: boolean
-    mode: 'local' | 'webdav' | 'both'
+    mode: 'local' | 'webdav' | 'both' | 's3' | 'local_s3'
     webdav_url: string
     webdav_username: string
     webdav_password: string
     webdav_root_path: string
+    s3_account_id: string
+    s3_access_key_id: string
+    s3_secret_access_key: string
+    s3_bucket: string
+    s3_prefix: string
     public_base_url: string
   }
   backup?: {

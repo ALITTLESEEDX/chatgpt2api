@@ -456,6 +456,7 @@ export function buildLogPreviewGalleryFile(image: LogPreviewImage | null | undef
     storage: 'log',
     local: false,
     webdav: false,
+    s3: false,
     width: null,
     height: null,
   }

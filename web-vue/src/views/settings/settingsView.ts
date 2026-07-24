@@ -88,6 +88,8 @@ export const imageStorageModeOptions: SettingsSelectOption[] = [
   { label: '仅本地', value: 'local' },
   { label: '仅 WebDAV', value: 'webdav' },
   { label: '本地 + WebDAV', value: 'both' },
+  { label: '仅 S3 / R2', value: 's3' },
+  { label: '本地 + S3 / R2', value: 'local_s3' },
 ]
 
 export const proxyRuntimeEgressOptions: SettingsSelectOption[] = [

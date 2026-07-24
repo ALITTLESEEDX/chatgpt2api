@@ -36,6 +36,11 @@ DEFAULT_IMAGE_STORAGE = {
     "webdav_username": "",
     "webdav_password": "",
     "webdav_root_path": "chatgpt2api/images",
+    "s3_account_id": "",
+    "s3_access_key_id": "",
+    "s3_secret_access_key": "",
+    "s3_bucket": "",
+    "s3_prefix": "chatgpt2api/images",
     "public_base_url": "",
 }
 
@@ -146,7 +151,7 @@ def _normalize_backup_state(value: object) -> dict[str, object]:
 def _normalize_image_storage_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     mode = str(source.get("mode") or "local").strip().lower()
-    if mode not in {"local", "webdav", "both"}:
+    if mode not in {"local", "webdav", "both", "s3", "local_s3"}:
         mode = "local"
     enabled = _normalize_bool(source.get("enabled"), False)
     if not enabled:
@@ -159,6 +164,12 @@ def _normalize_image_storage_settings(value: object) -> dict[str, object]:
         "webdav_username": str(source.get("webdav_username") or "").strip(),
         "webdav_password": str(source.get("webdav_password") or "").strip(),
         "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "s3_account_id": str(source.get("s3_account_id") or "").strip(),
+        "s3_access_key_id": str(source.get("s3_access_key_id") or "").strip(),
+        "s3_secret_access_key": str(source.get("s3_secret_access_key") or "").strip(),
+        "s3_bucket": str(source.get("s3_bucket") or "").strip(),
+        "s3_prefix": str(source.get("s3_prefix") or DEFAULT_IMAGE_STORAGE["s3_prefix"]).strip().strip("/")
+        or str(DEFAULT_IMAGE_STORAGE["s3_prefix"]),
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     }
 
@@ -320,10 +331,22 @@ def _promote_legacy_basic_settings(data: dict[str, object]) -> dict[str, object]
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
         return
-    if not str(settings.get("webdav_url") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
-    if not str(settings.get("webdav_password") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+    mode = str(settings.get("mode") or "local").strip().lower()
+    if mode in {"webdav", "both"}:
+        if not str(settings.get("webdav_url") or "").strip():
+            raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
+        if not str(settings.get("webdav_password") or "").strip():
+            raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+    if mode in {"s3", "local_s3"}:
+        required = {
+            "Account ID": settings.get("s3_account_id"),
+            "Access Key ID": settings.get("s3_access_key_id"),
+            "Secret Access Key": settings.get("s3_secret_access_key"),
+            "Bucket": settings.get("s3_bucket"),
+        }
+        missing = [label for label, value in required.items() if not str(value or "").strip()]
+        if missing:
+            raise ValueError(f"启用 S3/R2 图片存储后必须填写：{'、'.join(missing)}")
 
 
 @dataclass(frozen=True)

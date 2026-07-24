@@ -76,6 +76,8 @@ export function formatDimensions(file: GalleryFile): string {
 export function storageLabel(file: GalleryFile): string {
   if (file.storage === 'both') return '本地+云'
   if (file.storage === 'webdav') return '云端'
+  if (file.storage === 'local_s3') return '本地+S3'
+  if (file.storage === 's3') return 'S3'
   return '本地'
 }
 

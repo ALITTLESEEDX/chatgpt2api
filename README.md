@@ -46,7 +46,7 @@
 - 注册账号链路：支持临时邮箱、GPTMail、Outlook Token 邮箱池和 Microsoft plus alias，提供验证码等待、注册进度、邮箱池状态和实时日志。
 - 代理与稳定出口：支持账号代理、账号组代理、多出口代理组、节点并发、备用出口、WARP / Privoxy / FlareSolverr 稳定代理运行时和 Cloudflare clearance 测试。
 - 管理控制台：包含概览中心、账号管理、日志管理、实时监控、图片管理/存储管理、代理管理、注册账号、对话画图、调试中心和系统设置。
-- 自托管部署：支持 Docker、一键脚本、JSON / SQLite / PostgreSQL / Git 账号存储后端、WebDAV 图片存储和 R2 备份。
+- 自托管部署：支持 Docker、一键脚本、JSON / SQLite / PostgreSQL / Git 账号存储后端、WebDAV / Cloudflare R2 图片存储和 R2 备份。
 
 ---
 
@@ -76,7 +76,7 @@ flowchart TB
   Protocol --> Upstream["ChatGPT 官网"]
   Protocol --> AccountsPool["账号池 / 代理出口"]
   Protocol --> LogsStore["调用日志 / 实时监控"]
-  Protocol --> ImageStore["本地 / WebDAV 图片存储"]
+  Protocol --> ImageStore["本地 / WebDAV / R2 图片存储"]
   ConsoleModules --> AdminAPI["/api 管理接口"]
   AdminAPI --> DataStore["data 目录 / SQLite / PostgreSQL / Git"]
 ```
@@ -240,7 +240,7 @@ environment:
 - 代理优先级：账号个人代理 > 账号组代理/代理组 > 显式任务代理 > 默认代理 > 稳定代理运行时 > 直连。
 - 代理组支持多出口节点、节点图片并发、轮换间隔、健康展示和测试。
 - 备用出口可用于图片早期 TLS / 连接超时失败后的重试，默认关闭。
-- 支持本地图片存储、WebDAV、双写、图片索引、标签、下载、压缩和清理。
+- 支持本地图片存储、WebDAV、Cloudflare R2、本地双写、图片索引、标签、下载、压缩和清理。
 - R2 备份可覆盖配置、账号、日志、图片索引、概览统计等关键数据。
 - 概览中心的调用趋势、成功率和模型统计独立滚动保留最近 30 天。
 

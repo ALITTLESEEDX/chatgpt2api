@@ -348,7 +348,8 @@ def save_image_bytes(image_data: bytes, base_url: str | None = None) -> str:
                 "error": diagnostic_excerpt(repr(exc), 500),
             })
     raise ImageDownloadError(
-        f"image result storage failed: {diagnostic_excerpt(last_error, 500)}"
+        f"image result storage failed: {diagnostic_excerpt(last_error, 500)}",
+        failure=image_failure("image_storage_failed", raw_detail=str(last_error or "")),
     ) from last_error
 
 
@@ -2565,7 +2566,7 @@ def _generate_single_image(
                 False,
                 failure=failure,
                 error=image_error,
-                quota_consumed=(failure.code == "image_download_failed"),
+                quota_consumed=(failure.code in {"image_download_failed", "image_storage_failed"}),
             )
             attach_attempts(image_error)
             if retry_with_different_account(failure, image_error):

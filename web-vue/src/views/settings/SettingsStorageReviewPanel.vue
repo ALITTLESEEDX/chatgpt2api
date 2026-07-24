@@ -4,7 +4,7 @@
       <div class="settings-check-grid settings-check-grid--single">
         <div class="settings-check-item">
           <div class="settings-check-control">
-            <Checkbox v-model="imageStorage.enabled">启用 WebDAV 图片存储</Checkbox>
+            <Checkbox v-model="imageStorage.enabled">启用远程图片存储</Checkbox>
           </div>
         </div>
       </div>
@@ -21,23 +21,49 @@
         </div>
       </FormField>
 
-      <FormField label="WebDAV URL">
-        <Input v-model.trim="imageStorage.webdav_url" block placeholder="https://example.com/dav" />
-      </FormField>
-
-      <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
-        <FormField label="用户名">
-          <Input v-model.trim="imageStorage.webdav_username" block />
+      <template v-if="isWebdavMode">
+        <FormField label="WebDAV URL">
+          <Input v-model.trim="imageStorage.webdav_url" block placeholder="https://example.com/dav" />
         </FormField>
 
-        <FormField label="密码">
-          <Input v-model="imageStorage.webdav_password" type="password" block />
-        </FormField>
-      </div>
+        <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+          <FormField label="用户名">
+            <Input v-model.trim="imageStorage.webdav_username" block />
+          </FormField>
 
-      <FormField label="根路径">
-        <Input v-model.trim="imageStorage.webdav_root_path" block placeholder="chatgpt2api/images" />
-      </FormField>
+          <FormField label="密码">
+            <Input v-model="imageStorage.webdav_password" type="password" block />
+          </FormField>
+        </div>
+
+        <FormField label="根路径">
+          <Input v-model.trim="imageStorage.webdav_root_path" block placeholder="chatgpt2api/images" />
+        </FormField>
+      </template>
+
+      <template v-if="isS3Mode">
+        <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+          <FormField label="Cloudflare Account ID">
+            <Input v-model.trim="imageStorage.s3_account_id" block />
+          </FormField>
+
+          <FormField label="Bucket">
+            <Input v-model.trim="imageStorage.s3_bucket" block />
+          </FormField>
+        </div>
+
+        <FormField label="Access Key ID">
+          <Input v-model.trim="imageStorage.s3_access_key_id" block />
+        </FormField>
+
+        <FormField label="Secret Access Key">
+          <Input v-model="imageStorage.s3_secret_access_key" type="password" block />
+        </FormField>
+
+        <FormField label="对象前缀">
+          <Input v-model.trim="imageStorage.s3_prefix" block placeholder="chatgpt2api/images" />
+        </FormField>
+      </template>
 
       <FormField label="公开访问前缀">
         <Input v-model.trim="imageStorage.public_base_url" block placeholder="https://cdn.example.com/images" />
@@ -45,7 +71,7 @@
 
       <div class="flex flex-wrap items-center gap-2">
         <Button size="xs" variant="outline" :disabled="imageStorageBusy === 'test'" @click="$emit('testStorage')">
-          {{ imageStorageBusy === 'test' ? '测试中...' : '测试 WebDAV' }}
+          {{ imageStorageBusy === 'test' ? '测试中...' : '测试连接' }}
         </Button>
         <Button size="xs" variant="outline" :disabled="imageStorageBusy === 'sync'" @click="$emit('syncStorage')">
           {{ imageStorageBusy === 'sync' ? '同步中...' : '全量同步' }}
@@ -54,7 +80,7 @@
 
       <div v-if="imageStorageTestResult" class="rounded-xl border border-border bg-background px-3 py-2 text-xs">
         <p :class="imageStorageTestResult.ok ? 'text-emerald-600' : 'text-slate-600'">
-          {{ imageStorageTestResult.ok ? 'WebDAV 可用' : 'WebDAV 不可用' }}
+          {{ imageStorageTestResult.ok ? '远程存储可用' : '远程存储不可用' }}
           <span v-if="imageStorageTestResult.status"> · HTTP {{ imageStorageTestResult.status }}</span>
         </p>
         <p v-if="imageStorageTestResult.error" class="mt-1 break-all text-slate-600">{{ imageStorageTestResult.error }}</p>
@@ -114,6 +140,8 @@ defineEmits<{
 }>()
 
 const imageStorage = computed(() => props.settings.image_storage as NonNullable<Settings['image_storage']>)
+const isWebdavMode = computed(() => ['webdav', 'both'].includes(imageStorage.value.mode))
+const isS3Mode = computed(() => ['s3', 'local_s3'].includes(imageStorage.value.mode))
 </script>
 
 <style scoped>

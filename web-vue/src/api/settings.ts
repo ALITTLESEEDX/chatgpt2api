@@ -292,11 +292,16 @@ export function normalizeSettings(raw: RawSettings | null | undefined): Settings
     },
     image_storage: {
       enabled: boolValue(imageStorage.enabled, false),
-      mode: ['webdav', 'both'].includes(cleanString(imageStorage.mode)) ? cleanString(imageStorage.mode) : 'local',
+      mode: ['webdav', 'both', 's3', 'local_s3'].includes(cleanString(imageStorage.mode)) ? cleanString(imageStorage.mode) : 'local',
       webdav_url: cleanString(imageStorage.webdav_url),
       webdav_username: cleanString(imageStorage.webdav_username),
       webdav_password: cleanString(imageStorage.webdav_password),
       webdav_root_path: cleanString(imageStorage.webdav_root_path) || 'chatgpt2api/images',
+      s3_account_id: cleanString(imageStorage.s3_account_id),
+      s3_access_key_id: cleanString(imageStorage.s3_access_key_id),
+      s3_secret_access_key: cleanString(imageStorage.s3_secret_access_key),
+      s3_bucket: cleanString(imageStorage.s3_bucket),
+      s3_prefix: cleanString(imageStorage.s3_prefix) || 'chatgpt2api/images',
       public_base_url: cleanString(imageStorage.public_base_url),
     },
     backup: {

@@ -47,6 +47,7 @@ const lightboxFile = computed<GalleryFile | null>(() => {
     storage: 'studio',
     local: Boolean(preview.localPath),
     webdav: false,
+    s3: false,
     width: null,
     height: null,
   }

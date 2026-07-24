@@ -71,6 +71,11 @@ image_storage:
   webdav_username: ""
   webdav_password: ""
   webdav_root_path: chatgpt2api/images
+  s3_account_id: ""
+  s3_access_key_id: ""
+  s3_secret_access_key: ""
+  s3_bucket: ""
+  s3_prefix: chatgpt2api/images
   public_base_url: ""
 
 chat_completion_cache:

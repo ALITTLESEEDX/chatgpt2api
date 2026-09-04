@@ -7,7 +7,7 @@
             <Checkbox
               v-model="imageStorage.enabled"
               :disabled="fieldReadOnly('image_storage.enabled')"
-            >启用 WebDAV 图片存储</Checkbox>
+            >启用远程图片存储</Checkbox>
           </div>
         </div>
       </div>
@@ -25,43 +25,92 @@
         </div>
       </FormField>
 
-      <FormField label="WebDAV URL">
-        <Input
-          v-model.trim="imageStorage.webdav_url"
-          block
-          :disabled="fieldReadOnly('image_storage.webdav_url')"
-          placeholder="https://example.com/dav"
-        />
-      </FormField>
-
-      <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
-        <FormField label="用户名">
+      <template v-if="isWebdavMode">
+        <FormField label="WebDAV URL">
           <Input
-            v-model.trim="imageStorage.webdav_username"
+            v-model.trim="imageStorage.webdav_url"
             block
-            :disabled="fieldReadOnly('image_storage.webdav_username')"
+            :disabled="fieldReadOnly('image_storage.webdav_url')"
+            placeholder="https://example.com/dav"
           />
         </FormField>
 
-        <FormField label="密码">
+        <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+          <FormField label="用户名">
+            <Input
+              v-model.trim="imageStorage.webdav_username"
+              block
+              :disabled="fieldReadOnly('image_storage.webdav_username')"
+            />
+          </FormField>
+
+          <FormField label="密码">
+            <Input
+              v-model="imageStorage.webdav_password"
+              type="password"
+              block
+              :disabled="fieldReadOnly('image_storage.webdav_password')"
+              :placeholder="imageStorage.has_webdav_password ? '已配置，留空不修改' : '请输入 WebDAV 密码'"
+            />
+          </FormField>
+        </div>
+
+        <FormField label="根路径">
           <Input
-            v-model="imageStorage.webdav_password"
+            v-model.trim="imageStorage.webdav_root_path"
+            block
+            :disabled="fieldReadOnly('image_storage.webdav_root_path')"
+            placeholder="chatgpt2api/images"
+          />
+        </FormField>
+      </template>
+
+      <template v-if="isS3Mode">
+        <div class="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+          <FormField label="Cloudflare Account ID">
+            <Input
+              v-model.trim="imageStorage.s3_account_id"
+              block
+              :disabled="fieldReadOnly('image_storage.s3_account_id')"
+            />
+          </FormField>
+
+          <FormField label="Bucket">
+            <Input
+              v-model.trim="imageStorage.s3_bucket"
+              block
+              :disabled="fieldReadOnly('image_storage.s3_bucket')"
+            />
+          </FormField>
+        </div>
+
+        <FormField label="Access Key ID">
+          <Input
+            v-model.trim="imageStorage.s3_access_key_id"
+            block
+            :disabled="fieldReadOnly('image_storage.s3_access_key_id')"
+          />
+        </FormField>
+
+        <FormField label="Secret Access Key">
+          <Input
+            v-model="imageStorage.s3_secret_access_key"
             type="password"
             block
-            :disabled="fieldReadOnly('image_storage.webdav_password')"
-            :placeholder="imageStorage.has_webdav_password ? '已配置，留空不修改' : '请输入 WebDAV 密码'"
+            :disabled="fieldReadOnly('image_storage.s3_secret_access_key')"
+            :placeholder="imageStorage.has_s3_secret_access_key ? '已配置，留空不修改' : '请输入 Secret Access Key'"
           />
         </FormField>
-      </div>
 
-      <FormField label="根路径">
-        <Input
-          v-model.trim="imageStorage.webdav_root_path"
-          block
-          :disabled="fieldReadOnly('image_storage.webdav_root_path')"
-          placeholder="chatgpt2api/images"
-        />
-      </FormField>
+        <FormField label="对象前缀">
+          <Input
+            v-model.trim="imageStorage.s3_prefix"
+            block
+            :disabled="fieldReadOnly('image_storage.s3_prefix')"
+            placeholder="chatgpt2api/images"
+          />
+        </FormField>
+      </template>
 
       <FormField label="公开访问前缀">
         <Input
@@ -74,7 +123,7 @@
 
       <div class="flex flex-wrap items-center gap-2">
         <Button size="xs" variant="outline" :disabled="imageStorageBusy === 'test'" @click="$emit('testStorage')">
-          {{ imageStorageBusy === 'test' ? '测试中...' : '测试 WebDAV' }}
+          {{ imageStorageBusy === 'test' ? '测试中...' : '测试连接' }}
         </Button>
         <Button size="xs" variant="outline" :disabled="imageStorageBusy === 'sync'" @click="$emit('syncStorage')">
           {{ imageStorageBusy === 'sync' ? '同步中...' : '全量同步' }}
@@ -83,7 +132,7 @@
 
       <div v-if="imageStorageTestResult" class="rounded-xl border border-border bg-background px-3 py-2 text-xs">
         <p :class="imageStorageTestResult.ok ? 'text-emerald-600' : 'text-slate-600'">
-          {{ imageStorageTestResult.ok ? 'WebDAV 可用' : 'WebDAV 不可用' }}
+          {{ imageStorageTestResult.ok ? '远程存储可用' : '远程存储不可用' }}
           <span v-if="imageStorageTestResult.status"> · HTTP {{ imageStorageTestResult.status }}</span>
         </p>
         <p v-if="imageStorageTestResult.error" class="mt-1 break-all text-slate-600">{{ imageStorageTestResult.error }}</p>
@@ -145,9 +194,8 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Button, Checkbox, FormField, FormSection, Input } from 'nanocat-ui'
+import { Button, Checkbox, FormField, FormSection, Input, GroupedSelectMenu } from 'nanocat-ui'
 import type { ImageStorageTestResult } from '@/api/settings'
-import { GroupedSelectMenu } from 'nanocat-ui'
 import type { Settings } from '@/types/api'
 import {
   settingsFieldOptions,
@@ -172,6 +220,8 @@ const fieldReadOnly = (path: string) => settingsFieldReadOnly(props.fields, path
 const imageStorageModeOptions = computed(() => (
   settingsFieldOptions(props.fields, 'image_storage.mode', imageStorage.value.mode)
 ))
+const isWebdavMode = computed(() => ['webdav', 'both'].includes(imageStorage.value.mode))
+const isS3Mode = computed(() => ['s3', 'local_s3'].includes(imageStorage.value.mode))
 </script>
 
 <style scoped>

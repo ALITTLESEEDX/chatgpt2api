@@ -4,12 +4,15 @@ import copy
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import threading
 from typing import Any, Iterable, Mapping
 
 from contracts.settings import (
+    AccountImportApiSettings,
     AIReviewSettings,
     BackupIncludeSettings,
     BackupSettings,
@@ -34,6 +37,7 @@ from contracts.settings_specification import (
     numeric_setting_spec,
 )
 from services.config import (
+    DEFAULT_ACCOUNT_IMPORT_API,
     DEFAULT_BACKUP_INCLUDE,
     DEFAULT_GENBOX_PUSH,
     DEFAULT_IMAGE_STORAGE,
@@ -74,6 +78,7 @@ _MANAGED_TOP_LEVEL_FIELDS = (
     "ai_review",
     "image_storage",
     "genbox_push",
+    "account_import_api",
     "backup",
     "third_party_apps",
 )
@@ -81,7 +86,9 @@ _MANAGED_TOP_LEVEL_FIELDS = (
 _SENSITIVE_PATHS = (
     ("ai_review", "api_key"),
     ("image_storage", "webdav_password"),
+    ("image_storage", "s3_secret_access_key"),
     ("genbox_push", "push_key"),
+    ("account_import_api", "api_key"),
     ("backup", "secret_access_key"),
     ("backup", "passphrase"),
     ("proxy_runtime", "clearance", "cf_cookies"),
@@ -95,6 +102,10 @@ class SettingsRevisionConflictError(ValueError):
 
 def _generated_at() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _generate_import_api_key() -> str:
+    return secrets.token_hex(24)
 
 
 def _text(value: object, default: str = "") -> str:
@@ -266,11 +277,16 @@ _FIELD_SPECS: dict[str, dict[str, Any]] = {
     "ai_review.model": _field_metadata(""),
     "ai_review.prompt": _field_metadata(""),
     "image_storage.enabled": _field_metadata(False),
-    "image_storage.mode": _field_metadata("local", options=("local", "webdav", "both")),
+    "image_storage.mode": _field_metadata("local", options=("local", "webdav", "both", "s3", "local_s3")),
     "image_storage.webdav_url": _field_metadata(""),
     "image_storage.webdav_username": _field_metadata(""),
     "image_storage.webdav_password": _field_metadata("", sensitive=True),
     "image_storage.webdav_root_path": _field_metadata(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+    "image_storage.s3_account_id": _field_metadata(""),
+    "image_storage.s3_access_key_id": _field_metadata(""),
+    "image_storage.s3_secret_access_key": _field_metadata("", sensitive=True),
+    "image_storage.s3_bucket": _field_metadata(""),
+    "image_storage.s3_prefix": _field_metadata(DEFAULT_IMAGE_STORAGE["s3_prefix"]),
     "image_storage.public_base_url": _field_metadata(""),
     "genbox_push.enabled": _field_metadata(False),
     "genbox_push.base_url": _field_metadata(""),
@@ -278,6 +294,8 @@ _FIELD_SPECS: dict[str, dict[str, Any]] = {
     "genbox_push.push_key": _field_metadata("", sensitive=True),
     "genbox_push.timeout_secs": _field_metadata(20, min=5, max=120, unit="seconds"),
     "genbox_push.auto_push_after_studio": _field_metadata(False),
+    "account_import_api.enabled": _field_metadata(False),
+    "account_import_api.api_key": _field_metadata("", sensitive=True, read_only=True),
     "backup.enabled": _field_metadata(False),
     "backup.provider": _field_metadata("cloudflare_r2", options=("cloudflare_r2",), read_only=True),
     "backup.account_id": _field_metadata(""),
@@ -330,6 +348,8 @@ class SettingsManagementService:
         values = patch.model_dump(mode="python", exclude_unset=True)
         expected_revision = _text(values.pop("revision"))
         clear_genbox_push = bool(_path_value(values, ("genbox_push", "clear_push_key")))
+        # 导入密钥只由专用端点生成，设置保存不接受外部写入。
+        _delete_path(values, ("account_import_api", "api_key"))
         self._drop_blank_sensitive_values(values)
 
         with self._mutation_lock, self._config_lock():
@@ -342,6 +362,7 @@ class SettingsManagementService:
                 raise ValueError("base_url is read-only while CHATGPT2API_BASE_URL is configured")
 
             updates = self._storage_updates(values, effective, stored)
+            generated_import_api_key = self._ensure_import_api_key(updates)
             if clear_genbox_push:
                 genbox_updates = updates.get("genbox_push")
                 if isinstance(genbox_updates, dict):
@@ -360,6 +381,8 @@ class SettingsManagementService:
             changed_roots = {path[0] for path in candidate_paths}
             if clear_genbox_push:
                 changed_roots.add("genbox_push")
+            if generated_import_api_key:
+                changed_roots.add("account_import_api")
             changed_updates = {
                 key: value for key, value in updates.items()
                 if key in changed_roots
@@ -380,6 +403,8 @@ class SettingsManagementService:
             if clear_genbox_push:
                 changed_fields.append("genbox_push.push_key")
                 changed_fields = sorted(set(changed_fields))
+            if generated_import_api_key:
+                changed_fields = sorted({*changed_fields, "account_import_api.api_key"})
             restart_required = any(
                 view.fields.get(path, SettingsFieldMetadata(source="configured")).restart_required
                 for path in changed_fields
@@ -399,6 +424,59 @@ class SettingsManagementService:
         if lock is None:
             lock = getattr(self._config, "_lock", None)
         return lock if lock is not None else nullcontext()
+
+    def reveal_import_api_key(self) -> str:
+        """Return the stored import key so an admin can copy it again."""
+
+        with self._mutation_lock, self._config_lock():
+            _effective, stored = self._snapshots()
+            return _text(_path_value(stored, ("account_import_api", "api_key")))
+
+    def regenerate_import_api_key(self) -> str:
+        """Replace the import key and return the new value."""
+
+        with self._mutation_lock, self._config_lock():
+            _effective, stored = self._snapshots()
+            base = _dict(stored.get("account_import_api"))
+            api_key = _generate_import_api_key()
+            self._config.update({"account_import_api": {**base, "api_key": api_key}})
+            return api_key
+
+    def authenticate_import_api_key(self, candidate: str) -> bool:
+        """Report whether the caller key matches the enabled import section.
+
+        The section owns both the toggle and the key, so callers consume one
+        decision instead of re-deriving it from two projected fields.
+        """
+
+        with self._mutation_lock, self._config_lock():
+            _effective, stored = self._snapshots()
+            section = _dict(stored.get("account_import_api"))
+            if not _bool(section.get("enabled"), False):
+                return False
+            expected = _text(section.get("api_key"))
+            supplied = _text(candidate)
+            if not expected or not supplied:
+                return False
+            return hmac.compare_digest(expected, supplied)
+
+    def import_api_enabled(self) -> bool:
+        with self._mutation_lock, self._config_lock():
+            _effective, stored = self._snapshots()
+            return _bool(_dict(stored.get("account_import_api")).get("enabled"), False)
+
+    @staticmethod
+    def _ensure_import_api_key(updates: dict[str, Any]) -> str:
+        """Generate the import key when the section is enabled without one."""
+
+        section = updates.get("account_import_api")
+        if not isinstance(section, dict):
+            return ""
+        if not _bool(section.get("enabled"), False) or _text(section.get("api_key")):
+            return ""
+        api_key = _generate_import_api_key()
+        section["api_key"] = api_key
+        return api_key
 
     @staticmethod
     def _comparison_value(
@@ -445,6 +523,8 @@ class SettingsManagementService:
         stored_image_storage = _dict(stored.get("image_storage"))
         genbox_push = _dict(effective.get("genbox_push"))
         stored_genbox_push = _dict(stored.get("genbox_push"))
+        account_import_api = _dict(effective.get("account_import_api"))
+        stored_account_import_api = _dict(stored.get("account_import_api"))
         backup = _dict(effective.get("backup"))
         stored_backup = _dict(stored.get("backup"))
         backup_include = _dict(backup.get("include"))
@@ -562,7 +642,7 @@ class SettingsManagementService:
             ),
             image_storage=ImageStorageSettings(
                 enabled=_bool(image_storage.get("enabled"), False),
-                mode=_enum(image_storage.get("mode"), "local", {"local", "webdav", "both"}),
+                mode=_enum(image_storage.get("mode"), "local", {"local", "webdav", "both", "s3", "local_s3"}),
                 webdav_url=_url(image_storage.get("webdav_url")),
                 webdav_username=_text(image_storage.get("webdav_username")),
                 webdav_password="",
@@ -570,6 +650,15 @@ class SettingsManagementService:
                 webdav_root_path=(
                     _text(image_storage.get("webdav_root_path"), str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]))
                     or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"])
+                ),
+                s3_account_id=_text(image_storage.get("s3_account_id")),
+                s3_access_key_id=_text(image_storage.get("s3_access_key_id")),
+                s3_secret_access_key="",
+                has_s3_secret_access_key=bool(_text(stored_image_storage.get("s3_secret_access_key"))),
+                s3_bucket=_text(image_storage.get("s3_bucket")),
+                s3_prefix=(
+                    _text(image_storage.get("s3_prefix"), str(DEFAULT_IMAGE_STORAGE["s3_prefix"]))
+                    or str(DEFAULT_IMAGE_STORAGE["s3_prefix"])
                 ),
                 public_base_url=_url(image_storage.get("public_base_url")),
             ),
@@ -581,6 +670,14 @@ class SettingsManagementService:
                 has_push_key=bool(_text(stored_genbox_push.get("push_key"))),
                 timeout_secs=max(5, min(120, int(genbox_push.get("timeout_secs") or DEFAULT_GENBOX_PUSH["timeout_secs"]))),
                 auto_push_after_studio=_bool(genbox_push.get("auto_push_after_studio"), False),
+            ),
+            account_import_api=AccountImportApiSettings(
+                enabled=_bool(
+                    account_import_api.get("enabled"),
+                    bool(DEFAULT_ACCOUNT_IMPORT_API["enabled"]),
+                ),
+                api_key="",
+                has_api_key=bool(_text(stored_account_import_api.get("api_key"))),
             ),
             backup=BackupSettings(
                 enabled=_bool(backup.get("enabled"), False),

@@ -30,6 +30,7 @@ _IMPORT_SECRET_KEYS = {
     "refreshtoken",
     "secretkey",
     "token",
+    "twofactorsecret",
 }
 _IMPORT_PROXY_KEYS = {"proxy", "proxyurl"}
 

@@ -9,7 +9,7 @@ from contracts.settings_specification import numeric_setting_spec
 
 LogLevel = Literal["debug", "info", "warning", "error"]
 ImageUpscaleEngine = Literal["sharp_lanczos3", "pillow_lanczos"]
-ImageStorageMode = Literal["local", "webdav", "both"]
+ImageStorageMode = Literal["local", "webdav", "both", "s3", "local_s3"]
 ProxyRuntimeClearanceMode = Literal["none", "manual", "flaresolverr"]
 SettingsFieldSource = Literal["default", "configured", "environment"]
 
@@ -62,11 +62,17 @@ class _ImageStorageFields(_StrictModel):
     webdav_username: str = ""
     webdav_password: str = ""
     webdav_root_path: str = "chatgpt2api/images"
+    s3_account_id: str = ""
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_bucket: str = ""
+    s3_prefix: str = "chatgpt2api/images"
     public_base_url: str = ""
 
 
 class ImageStorageSettings(_ImageStorageFields):
     has_webdav_password: bool = False
+    has_s3_secret_access_key: bool = False
 
 
 class ImageStoragePatch(_ImageStorageFields):
@@ -88,6 +94,19 @@ class GenBoxPushSettings(_GenBoxPushFields):
 
 class GenBoxPushPatch(_GenBoxPushFields):
     clear_push_key: bool = False
+
+
+class _AccountImportApiFields(_StrictModel):
+    enabled: bool = False
+    api_key: str = ""
+
+
+class AccountImportApiSettings(_AccountImportApiFields):
+    has_api_key: bool = False
+
+
+class AccountImportApiPatch(_AccountImportApiFields):
+    pass
 
 
 class BackupIncludeSettings(_StrictModel):
@@ -207,6 +226,7 @@ class _SettingsEditableFields(_StrictModel):
     ai_review: AIReviewPatch = Field(default_factory=AIReviewPatch)
     image_storage: ImageStoragePatch = Field(default_factory=ImageStoragePatch)
     genbox_push: GenBoxPushPatch = Field(default_factory=GenBoxPushPatch)
+    account_import_api: AccountImportApiPatch = Field(default_factory=AccountImportApiPatch)
     backup: BackupPatch = Field(default_factory=BackupPatch)
     third_party_apps: ThirdPartyAppsSettings = Field(default_factory=ThirdPartyAppsSettings)
 
@@ -221,6 +241,7 @@ class SettingsValues(_SettingsEditableFields):
     ai_review: AIReviewSettings = Field(default_factory=AIReviewSettings)
     image_storage: ImageStorageSettings = Field(default_factory=ImageStorageSettings)
     genbox_push: GenBoxPushSettings = Field(default_factory=GenBoxPushSettings)
+    account_import_api: AccountImportApiSettings = Field(default_factory=AccountImportApiSettings)
     backup: BackupSettings = Field(default_factory=BackupSettings)
 
 

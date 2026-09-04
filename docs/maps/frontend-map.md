@@ -15,7 +15,7 @@ The route source is
 | `/login` | `Login.vue` | Auth adapter and redirect validation |
 | `/` | `Dashboard.vue` | `dashboard/useDashboardPage.ts`, `statsApi` |
 | `/accounts` | `Accounts.vue` | `accounts/useAccountsPage.ts`, account CRUD, selection, import, bulk-operation, and test runtimes |
-| `/settings` | `Settings.vue` | Settings configuration, integrations, Prompt Sources, User Keys, backup, and external-source runtimes |
+| `/settings` | `Settings.vue` | Settings configuration, integrations including the account import API key, Prompt Sources, User Keys, backup, and external-source runtimes |
 | `/proxy` | `Proxy.vue` | Default-proxy, group, and node-import runtimes; `proxyApi` |
 | `/logs` | `Logs.vue` | Query, selection, export, and detail runtimes; `logsApi` |
 | `/monitor` | `Monitor.vue` | Realtime list and detail runtimes; `monitorApi` |

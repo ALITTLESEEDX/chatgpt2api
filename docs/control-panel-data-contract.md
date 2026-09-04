@@ -19,6 +19,7 @@
 | 实时监控 | `GET /api/monitor/realtime`、`services/monitor_view.py`、`api/monitor_contract.py` | `api/monitor.ts` 和监控行 / 详情 |
 | 调用日志 | `GET /api/logs`、`GET /api/logs/{id}`、`services/call_view.py`、`api/call_contract.py` | `api/logs.ts`、列表与详情抽屉 |
 | 账号管理 | `/api/accounts`、`/api/account-groups`、`api/accounts.py` | `api/accounts.ts` 与账号页面运行时 |
+| 账号导入 API | `POST /api/accounts/import-api`、`GET/POST /api/settings/account-import-api/key` | 设置页“接口接入”分区，外部系统直接调用导入接口 |
 | 代理管理 | `/api/proxy/*`、代理管理服务 | `api/proxy.ts` 与代理页面运行时 |
 | 系统设置 | `GET/PATCH /api/settings`、`services/settings_management_service.py`、`contracts/settings.py` | `api/settings.ts` 与设置分区 |
 | 图片管理 | `/api/images`、`ImageStorageService` | `api/gallery.ts` 与图库页面运行时 |

@@ -58,6 +58,10 @@ export interface AccountCleanupResult {
   auto_remove_rate_limited_accounts: boolean
 }
 
+export interface AccountImportApiKeyResult {
+  api_key: string
+}
+
 export interface BackupState {
   running?: boolean
   last_status?: string
@@ -193,4 +197,10 @@ export const settingsApi = {
 
   runAccountCleanup: (payload: AccountCleanupRequest = {}) =>
     apiClient.post<AccountCleanupRequest, AccountCleanupResult>('/api/settings/account-cleanup/run', payload),
+
+  getAccountImportApiKey: () =>
+    apiClient.get<never, AccountImportApiKeyResult>('/api/settings/account-import-api/key'),
+
+  regenerateAccountImportApiKey: () =>
+    apiClient.post<Record<string, never>, AccountImportApiKeyResult>('/api/settings/account-import-api/key', {}),
 }

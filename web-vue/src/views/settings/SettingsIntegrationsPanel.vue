@@ -106,6 +106,77 @@
         </div>
       </FormSection>
 
+      <FormSection
+        title="账号导入 API"
+        subtitle="外部系统按 X-API-Key 推送 Upstream Account，保存后由后台同步账号与额度。"
+      >
+        <div class="settings-check-grid settings-check-grid--single">
+          <div class="settings-check-item">
+            <div class="settings-check-control">
+              <Checkbox
+                v-model="settings.account_import_api.enabled"
+                :disabled="fieldReadOnly('account_import_api.enabled')"
+              >
+                启用账号导入 API
+              </Checkbox>
+            </div>
+          </div>
+        </div>
+
+        <FormField label="导入密钥">
+          <template #label-extra>
+            <HelpTip text="首次启用并保存设置后自动生成。密钥只用于账号导入接口，不能调用其他接口。" />
+          </template>
+          <div class="flex flex-wrap items-start gap-2">
+            <ValueSurface tag="p" mono break-mode="all" root-class="min-w-0 flex-1">
+              {{ importApiKeyDisplay }}
+            </ValueSurface>
+            <div class="flex shrink-0 flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                :disabled="!settings.account_import_api.has_api_key || Boolean(importApiKeyBusy)"
+                @click="$emit('show-import-api-key')"
+              >
+                {{ importApiKeyRevealed ? '隐藏' : '查看' }}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :disabled="!settings.account_import_api.has_api_key || Boolean(importApiKeyBusy)"
+                @click="$emit('copy-import-api-key')"
+              >
+                复制
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :disabled="Boolean(importApiKeyBusy)"
+                @click="$emit('regenerate-import-api-key')"
+              >
+                {{ importApiKeyBusy === 'regenerate' ? '生成中...' : '重新生成' }}
+              </Button>
+            </div>
+          </div>
+        </FormField>
+
+        <details class="rounded-xl border border-border bg-card px-4 py-3">
+          <summary class="flex cursor-pointer list-none items-center justify-between gap-3">
+            <span class="min-w-0">
+              <span class="block text-sm font-medium text-foreground">推送账号</span>
+              <span class="mt-1 block truncate font-mono text-xs text-muted-foreground">POST /api/accounts/import-api</span>
+            </span>
+            <span class="text-xs text-muted-foreground">展开</span>
+          </summary>
+          <div class="mt-3 space-y-2">
+            <p class="text-xs leading-5 text-muted-foreground">
+              单次最多 500 个账号。只有 access_token 必填，其余字段留空即不写入；重复的账号计入 skipped。
+            </p>
+            <pre class="overflow-auto whitespace-pre-wrap break-all rounded-xl bg-zinc-950 px-3 py-3 text-xs leading-5 text-zinc-100">{{ importApiExample }}</pre>
+          </div>
+        </details>
+      </FormSection>
+
       <FormSection title="常用接口">
         <div class="space-y-2">
           <details
@@ -133,7 +204,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Checkbox, FormField, FormSection, Input } from 'nanocat-ui'
+import { Button, Checkbox, FormField, FormSection, HelpTip, Input, ValueSurface } from 'nanocat-ui'
 import SurfaceBox from '@/components/ai/SurfaceBox.vue'
 import { getAuthToken } from '@/api/client'
 import type { Settings } from '@/types/api'
@@ -150,6 +221,14 @@ const props = defineProps<{
   settings: Settings
   fields: SettingsFields
   genboxTimeoutSecondsField: NumberSettingField
+  importApiKeyRevealed: string
+  importApiKeyBusy: 'reveal' | 'regenerate' | ''
+}>()
+
+defineEmits<{
+  (event: 'show-import-api-key'): void
+  (event: 'copy-import-api-key'): void
+  (event: 'regenerate-import-api-key'): void
 }>()
 
 const fieldReadOnly = (path: string) => settingsFieldReadOnly(props.fields, path)
@@ -157,6 +236,15 @@ const fieldReadOnly = (path: string) => settingsFieldReadOnly(props.fields, path
 const serviceBaseUrl = computed(() => window.location.origin)
 const openAIBaseUrl = computed(() => `${serviceBaseUrl.value.replace(/\/$/, '')}/v1`)
 const currentApiKey = computed(() => getAuthToken() || '<当前密钥>')
+const importApiKeyDisplay = computed(() => (
+  props.importApiKeyRevealed
+  || (props.settings.account_import_api.has_api_key ? '已生成，点击“查看”显示明文' : '启用后自动生成')
+))
+const importApiExample = computed(() => {
+  const key = props.importApiKeyRevealed || '<账号导入密钥>'
+  const body = '{"accounts":[{"access_token":"...","refresh_token":"...","email":"...","password":"...","two_factor_secret":"...","status":"正常"}]}'
+  return `curl -X POST ${serviceBaseUrl.value.replace(/\/$/, '')}/api/accounts/import-api \\\n  -H "X-API-Key: ${key}" \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`
+})
 const accessItems = computed(() => [
   { label: '服务地址', value: serviceBaseUrl.value },
   { label: 'Base URL（OpenAI）', value: openAIBaseUrl.value },

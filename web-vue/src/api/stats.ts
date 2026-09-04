@@ -234,8 +234,8 @@ function validateStorage(value: unknown) {
   expectObject(storage.application_database, 'response.storage.application_database')
   const imageStorage = expectObject(storage.image_storage, 'response.storage.image_storage')
   expectBoolean(imageStorage.enabled, 'response.storage.image_storage.enabled')
-  if (imageStorage.mode !== 'local' && imageStorage.mode !== 'webdav' && imageStorage.mode !== 'both') {
-    contractError('response.storage.image_storage.mode', 'local | webdav | both')
+  if (!['local', 'webdav', 'both', 's3', 'local_s3'].includes(imageStorage.mode as string)) {
+    contractError('response.storage.image_storage.mode', 'local | webdav | both | s3 | local_s3')
   }
   if (imageStorage.status !== 'not_checked') {
     contractError('response.storage.image_storage.status', 'not_checked')

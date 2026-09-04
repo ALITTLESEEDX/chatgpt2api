@@ -118,6 +118,11 @@
         :settings="localSettings"
         :fields="settingsFields"
         :genbox-timeout-seconds-field="genboxTimeoutSecondsField"
+        :import-api-key-revealed="importApiKeyRevealed"
+        :import-api-key-busy="importApiKeyBusy"
+        @show-import-api-key="showImportApiKey"
+        @copy-import-api-key="copyImportApiKey"
+        @regenerate-import-api-key="regenerateImportApiKey"
       />
 
       <SettingsUserKeysPanel
@@ -322,6 +327,7 @@ import SettingsUserKeyModals from '@/views/settings/SettingsUserKeyModals.vue'
 import SettingsStorageReviewPanel from '@/views/settings/SettingsStorageReviewPanel.vue'
 import SettingsUserKeysPanel from '@/views/settings/SettingsUserKeysPanel.vue'
 import { useSettingsBackupRuntime } from '@/views/settings/settingsBackupRuntime'
+import { useSettingsAccountImportApiRuntime } from '@/views/settings/settingsAccountImportApiRuntime'
 import { useSettingsConfigRuntime } from '@/views/settings/settingsConfigRuntime'
 import { useSettingsExternalSourcesRuntime } from '@/views/settings/settingsExternalSourcesRuntime'
 import { useSettingsImageStorageRuntime } from '@/views/settings/settingsImageStorageRuntime'
@@ -495,6 +501,15 @@ const imageStorageOperationProgress = imageStorageRuntime.operationProgress
 const closeImageStorageOperationProgress = imageStorageRuntime.closeOperationProgress
 const testImageStorageConnection = imageStorageRuntime.testImageStorageConnection
 const syncImageStorageFiles = imageStorageRuntime.syncImageStorageFiles
+const accountImportApiRuntime = useSettingsAccountImportApiRuntime({
+  requireSavedSettings,
+  reloadSettings,
+})
+const importApiKeyRevealed = accountImportApiRuntime.importApiKeyRevealed
+const importApiKeyBusy = accountImportApiRuntime.importApiKeyBusy
+const showImportApiKey = accountImportApiRuntime.showImportApiKey
+const copyImportApiKey = accountImportApiRuntime.copyImportApiKey
+const regenerateImportApiKey = accountImportApiRuntime.regenerateImportApiKey
 const settingsFields = computed<SettingsFields>(() => settingsStore.view?.fields || {})
 const fieldReadOnly = (path: string) => settingsFieldReadOnly(settingsFields.value, path)
 const fieldMetadata = (path: string) => settingsFields.value[path]
@@ -684,6 +699,7 @@ useSettingsTabRuntime({
     userKeysRuntime.invalidate,
     backupRuntime.invalidate,
     externalSourcesRuntime.invalidate,
+    accountImportApiRuntime.invalidate,
   ],
   shouldSkipActivateReload: () => Boolean(
     hasUnsavedSettings.value ||

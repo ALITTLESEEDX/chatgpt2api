@@ -4503,6 +4503,7 @@ class AccountService:
                         (account or {}).get("refresh_token"),
                         (account or {}).get("id_token"),
                         (account or {}).get("password"),
+                        (account or {}).get("two_factor_secret"),
                     )
                     if value
                 )

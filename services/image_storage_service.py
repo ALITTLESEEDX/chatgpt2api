@@ -18,6 +18,7 @@ from PIL import Image, ImageOps
 from services.config import DATA_DIR, config
 from services.image_failure import ImageFailureError, image_failure
 from services.json_file import read_json_object, write_json_file
+from services.r2_client import CloudflareR2Client, R2Error
 from services.storage.file_lock import interprocess_lock
 from utils.timezone import beijing_datetime_from_timestamp, beijing_now, beijing_now_str
 
@@ -228,6 +229,99 @@ class WebDAVClient:
             self.session.close()
 
 
+def _r2_settings(settings: dict[str, object]) -> dict[str, object]:
+    return {
+        "account_id": settings.get("s3_account_id"),
+        "access_key_id": settings.get("s3_access_key_id"),
+        "secret_access_key": settings.get("s3_secret_access_key"),
+        "bucket": settings.get("s3_bucket"),
+        "prefix": settings.get("s3_prefix"),
+    }
+
+
+def _storage_name(*, local: bool, webdav: bool, s3: bool) -> str:
+    if local and s3:
+        return "local_s3"
+    if local and webdav:
+        return "both"
+    if s3:
+        return "s3"
+    if webdav:
+        return "webdav"
+    return "local"
+
+
+class RemoteStorageClient:
+    def __init__(self, mode: str, settings: dict[str, object]) -> None:
+        self.mode = mode
+        self.settings = settings
+        if mode in {"s3", "local_s3"}:
+            self.backend = "s3"
+            self._r2 = CloudflareR2Client(_r2_settings(settings), object_label="图片")
+            self._webdav = None
+        else:
+            self.backend = "webdav"
+            self._r2 = None
+            self._webdav = WebDAVClient(settings)
+
+    @property
+    def session(self):
+        return self._r2.session if self._r2 is not None else self._webdav.session
+
+    def put(self, rel: str, payload: bytes, *, content_type: str = "image/png") -> tuple[str, str]:
+        if self._r2 is not None:
+            try:
+                res = self._r2.upload_bytes(rel, payload, content_type=content_type)
+                return "", str(res.get("key") or "")
+            except R2Error as exc:
+                raise ImageStorageError(str(exc)) from exc
+        else:
+            url = self._webdav.put(rel, payload, content_type=content_type)
+            return url, ""
+
+    def get(self, rel: str, *, s3_key: str = "") -> bytes:
+        if self._r2 is not None:
+            try:
+                key = s3_key or rel
+                return self._r2.download_bytes(key, include_prefix=bool(s3_key))
+            except R2Error as exc:
+                raise ImageStorageError(str(exc)) from exc
+        else:
+            return self._webdav.get(rel)
+
+    def delete(self, rel: str, *, s3_key: str = "") -> bool:
+        if self._r2 is not None:
+            try:
+                key = s3_key or rel
+                return self._r2.delete_object(key, include_prefix=bool(s3_key))
+            except R2Error as exc:
+                raise ImageStorageError(str(exc)) from exc
+        else:
+            return self._webdav.delete(rel)
+
+    def test(self) -> dict[str, object]:
+        if self._r2 is not None:
+            try:
+                self._r2.validate()
+                result = self._r2.upload_bytes(
+                    ".chatgpt2api_r2_test.txt",
+                    b"chatgpt2api r2 test\n",
+                    content_type="text/plain",
+                )
+                self._r2.delete_object(str(result["key"]), include_prefix=True)
+                return {"ok": True, "status": 200, "error": None}
+            except Exception as exc:
+                return {"ok": False, "status": 0, "error": str(exc) or exc.__class__.__name__}
+        else:
+            return self._webdav.test()
+
+    def close(self) -> None:
+        if self._r2 is not None:
+            self._r2.close()
+        if self._webdav is not None:
+            self._webdav.session.close()
+
+
 class ImageStorageService:
     def __init__(self, index_file: Path = IMAGE_INDEX_FILE):
         self.index_file = index_file
@@ -426,13 +520,15 @@ class ImageStorageService:
             # deadline cannot leave an unindexed local or remote asset behind.
             _raise_if_save_deadline_elapsed(deadline_monotonic)
             mode = self.mode()
-            if mode not in {"local", "webdav", "both"}:
+            if mode not in {"local", "webdav", "both", "s3", "local_s3"}:
                 mode = "local"
             stored_local = False
             stored_webdav = False
+            stored_s3 = False
+            s3_key = ""
             remote_url = ""
 
-            if mode in {"local", "both"}:
+            if mode in {"local", "both", "local_s3"}:
                 path = image_local_path(rel)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(image_data)
@@ -446,6 +542,15 @@ class ImageStorageService:
                 finally:
                     client.session.close()
 
+            if mode in {"s3", "local_s3"}:
+                client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+                try:
+                    uploaded = client.upload_bytes(rel, image_data, content_type="image/png")
+                    s3_key = str(uploaded.get("key") or "")
+                    stored_s3 = True
+                finally:
+                    client.close()
+
             dimensions = _image_dimensions(image_data)
             item = {
                 "rel": rel,
@@ -454,9 +559,11 @@ class ImageStorageService:
                 "date": "-".join(rel.split("/")[:3]),
                 "size": len(image_data),
                 "created_at": _now_iso(),
-                "storage": "both" if stored_local and stored_webdav else ("webdav" if stored_webdav else "local"),
+                "storage": _storage_name(local=stored_local, webdav=stored_webdav, s3=stored_s3),
                 "local": stored_local,
                 "webdav": stored_webdav,
+                "s3": stored_s3,
+                "s3_key": s3_key,
                 "remote_url": remote_url,
                 "generation": self._new_generation(),
             }
@@ -491,6 +598,13 @@ class ImageStorageService:
                 return client.get(safe_rel)
             finally:
                 client.session.close()
+        if bool(item.get("s3")):
+            client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
+            try:
+                key = _clean(item.get("s3_key"))
+                return client.download_bytes(key or safe_rel, include_prefix=bool(key))
+            finally:
+                client.close()
         raise HTTPException(status_code=404, detail="image not found")
 
     def record_genbox_push(self, rel: str, *, status: str, sha256: str, updated_at: str) -> dict[str, str]:
@@ -549,7 +663,7 @@ class ImageStorageService:
         existing.update(
             safe_rel
             for safe_rel in remote_rels
-            if items.get(safe_rel, {}).get("webdav")
+            if items.get(safe_rel, {}).get("webdav") or items.get(safe_rel, {}).get("s3")
         )
         return existing
 
@@ -624,7 +738,7 @@ class ImageStorageService:
                         LocalCopyRemoval(
                             rel=rel,
                             size=size,
-                            remote_remains=bool(snapshot.get(rel, {}).get("webdav")),
+                            remote_remains=bool(snapshot.get(rel, {}).get("webdav") or snapshot.get(rel, {}).get("s3")),
                         )
                         for rel, size in selected
                     )
@@ -635,7 +749,7 @@ class ImageStorageService:
                     changed = False
                     for rel, size in selected:
                         item = items.get(rel)
-                        remote_remains = bool(item and item.get("webdav"))
+                        remote_remains = bool(item and (item.get("webdav") or item.get("s3")))
                         removals.append(LocalCopyRemoval(rel, size, remote_remains))
                         if item is None:
                             continue
@@ -643,7 +757,7 @@ class ImageStorageService:
                             items[rel] = {
                                 **item,
                                 "local": False,
-                                "storage": "webdav",
+                                "storage": _storage_name(local=False, webdav=bool(item.get("webdav")), s3=bool(item.get("s3"))),
                             }
                         else:
                             items.pop(rel, None)
@@ -706,6 +820,8 @@ class ImageStorageService:
                         "storage": "local",
                         "local": True,
                         "webdav": False,
+                        "s3": False,
+                        "s3_key": "",
                         "generation": self._new_generation(),
                         **({"width": dimensions[0], "height": dimensions[1]} if dimensions else {}),
                     }
@@ -725,19 +841,20 @@ class ImageStorageService:
                     local_path = image_local_path(rel)
                     local = local_path.is_file()
                     webdav = bool(item.get("webdav"))
-                    if not local and not webdav:
+                    s3 = bool(item.get("s3"))
+                    if not local and not webdav and not s3:
                         indexed.pop(rel, None)
                         changed = True
                         continue
-                    storage = "both" if local and webdav else ("webdav" if webdav else "local")
+                    storage = _storage_name(local=local, webdav=webdav, s3=s3)
                     local_size: int | None = None
                     if local:
                         try:
                             local_size = local_path.stat().st_size
                         except OSError:
                             local = False
-                            storage = "webdav" if webdav else "local"
-                    if not local and not webdav:
+                            storage = _storage_name(local=False, webdav=webdav, s3=s3)
+                    if not local and not webdav and not s3:
                         indexed.pop(rel, None)
                         changed = True
                         continue
@@ -763,7 +880,7 @@ class ImageStorageService:
                         }
                         if local_size is not None:
                             item["size"] = local_size
-                        if size_changed and webdav:
+                        if size_changed and (webdav or s3):
                             item["remote_sync_pending"] = True
                         indexed[rel] = item
                         changed = True
@@ -811,14 +928,19 @@ class ImageStorageService:
                         catalog_changed = True
                     if item is None and existing is not None:
                         generation = _clean(existing.get("generation"))
+                    s3_key = _clean(item.get("s3_key")) if item else ""
+                    if not s3_key and existing:
+                        s3_key = _clean(existing.get("s3_key"))
                     tombstone = self._delete_tombstone(
                         generation=generation,
                         scope="asset",
                         remote=bool(
-                            (item and item.get("webdav"))
+                            (item and (item.get("webdav") or item.get("s3")))
                             or (existing and existing.get("remote"))
                         ),
                     )
+                    if s3_key:
+                        tombstone["s3_key"] = s3_key
                     pending[rel] = tombstone
                     planned[rel] = tombstone
                 if catalog_changed:
@@ -830,7 +952,7 @@ class ImageStorageService:
         self,
         rel: str,
         tombstone: dict[str, object],
-        client: WebDAVClient | None,
+        client: RemoteStorageClient | None,
     ) -> tuple[DeleteMutationResult, Exception | None]:
         with self._item_guard(rel):
             with self._index_guard():
@@ -864,10 +986,11 @@ class ImageStorageService:
                             removed=removed,
                             retry_remote=True,
                         ),
-                        ImageStorageError("WebDAV client is unavailable"),
+                        ImageStorageError("远程存储客户端不可用"),
                     )
                 try:
-                    removed = client.delete(rel) or removed
+                    s3_key = _clean(tombstone.get("s3_key"))
+                    removed = client.delete(rel, s3_key=s3_key) or removed
                 except Exception as exc:
                     return (
                         DeleteMutationResult(
@@ -925,7 +1048,7 @@ class ImageStorageService:
 
         removed_rels: set[str] = set()
         completed_rels: set[str] = set()
-        client: WebDAVClient | None = None
+        client: RemoteStorageClient | None = None
         terminal_error: Exception | None = None
         try:
             for offset in range(0, len(safe_rels), IMAGE_MUTATION_BATCH_SIZE):
@@ -939,7 +1062,7 @@ class ImageStorageService:
                 batch_error: Exception | None = None
                 if client is None and any(bool(item.get("remote")) for item in planned.values()):
                     try:
-                        client = WebDAVClient(self.settings())
+                        client = RemoteStorageClient(self.mode(), self.settings())
                     except Exception as exc:
                         batch_error = exc
 
@@ -979,7 +1102,7 @@ class ImageStorageService:
                     break
         finally:
             if client is not None:
-                client.session.close()
+                client.close()
 
         if terminal_error is not None:
             raise ImageBatchDeleteError(terminal_error, completed_rels) from terminal_error
@@ -1065,9 +1188,10 @@ class ImageStorageService:
                         path = image_local_path(rel)
                         current = items.get(rel, {})
                         remote_stale = bool(
-                            current.get("webdav") or current.get("remote_sync_pending")
+                            current.get("webdav") or current.get("s3") or current.get("remote_sync_pending")
                         )
-                        remote_exists = bool(current.get("webdav"))
+                        remote_webdav = bool(current.get("webdav"))
+                        remote_s3 = bool(current.get("s3"))
                         item = {
                             **current,
                             "rel": rel,
@@ -1083,9 +1207,11 @@ class ImageStorageService:
                             ),
                             "size": int(update["size"]),
                             "created_at": str(current.get("created_at") or _mtime_datetime(path)),
-                            "storage": "both" if remote_exists else "local",
+                            "storage": _storage_name(local=True, webdav=remote_webdav, s3=remote_s3),
                             "local": True,
-                            "webdav": remote_exists,
+                            "webdav": remote_webdav,
+                            "s3": remote_s3,
+                            "s3_key": str(current.get("s3_key") or ""),
                             "remote_url": str(current.get("remote_url") or ""),
                             "generation": self._item_generation(current) or self._new_generation(),
                         }
@@ -1113,7 +1239,7 @@ class ImageStorageService:
 
     def _repair_stale_sync_item(
         self,
-        client: WebDAVClient,
+        client: RemoteStorageClient,
         rel: str,
     ) -> tuple[bool, bool, bool]:
         with self._item_guard(rel):
@@ -1125,8 +1251,11 @@ class ImageStorageService:
                 with self._index_guard():
                     current = self._load_clean_index().get(rel, {})
                 update = self._sync_item(path, rel, current, payload, "")
-                remote_url = client.put(rel, payload)
+                remote_url, s3_key = client.put(rel, payload)
                 update["remote_url"] = remote_url
+                if s3_key:
+                    update["s3_key"] = s3_key
+                    update["s3"] = True
                 update = self._published_sync_item(update)
                 with self._index_guard():
                     items = self._load_clean_index()
@@ -1150,7 +1279,7 @@ class ImageStorageService:
 
     def _commit_sync_batch(
         self,
-        client: WebDAVClient,
+        client: RemoteStorageClient,
         updates: dict[str, dict[str, object]],
     ) -> tuple[set[str], set[str], int]:
         merged_rels: set[str] = set()
@@ -1187,12 +1316,15 @@ class ImageStorageService:
                                 remote_url,
                             )
                         )
+                        use_s3 = client.backend == "s3"
                         pending = {
                             **current,
                             **local_update,
-                            "storage": "both",
+                            "storage": _storage_name(local=True, webdav=not use_s3, s3=use_s3),
                             "local": True,
-                            "webdav": True,
+                            "webdav": not use_s3,
+                            "s3": use_s3,
+                            "s3_key": str(update.get("s3_key") or current.get("s3_key") or ""),
                             "remote_url": remote_url,
                             "remote_sync_pending": True,
                             "generation": (
@@ -1237,7 +1369,7 @@ class ImageStorageService:
 
     def _cleanup_remote_candidates(
         self,
-        client: WebDAVClient,
+        client: RemoteStorageClient,
         candidates: set[str],
         pending: dict[str, dict[str, object]],
     ) -> int:
@@ -1301,7 +1433,8 @@ class ImageStorageService:
 
                 if tombstone.get("remote"):
                     try:
-                        client.delete(rel)
+                        s3_key = _clean(tombstone.get("s3_key"))
+                        client.delete(rel, s3_key=s3_key)
                     except Exception:
                         failed += 1
                         continue
@@ -1333,7 +1466,9 @@ class ImageStorageService:
         failed = 0
         updates: dict[str, dict[str, object]] = {}
         uncertain_remote: set[str] = set()
-        client = WebDAVClient(settings)
+        mode = self.mode()
+        use_s3 = mode in {"s3", "local_s3"}
+        client = RemoteStorageClient(mode, settings)
         image_root = config.images_dir
         try:
             for path in sorted(image_root.rglob("*")):
@@ -1357,8 +1492,9 @@ class ImageStorageService:
                     catalog_matches_local = int(indexed_size) == path.stat().st_size
                 except (OSError, TypeError, ValueError):
                     catalog_matches_local = False
+                has_remote = item.get("s3") if use_s3 else item.get("webdav")
                 if (
-                    item.get("webdav")
+                    has_remote
                     and not item.get("remote_sync_pending")
                     and catalog_matches_local
                 ):
@@ -1367,8 +1503,16 @@ class ImageStorageService:
                 try:
                     payload = path.read_bytes()
                     update = self._sync_item(path, rel, item, payload, "")
-                    remote_url = client.put(rel, payload)
+                    remote_url, s3_key = client.put(rel, payload)
                     update["remote_url"] = remote_url
+                    if s3_key:
+                        update["s3_key"] = s3_key
+                        update["s3"] = True
+                        update["webdav"] = False
+                    else:
+                        update["webdav"] = True
+                        update["s3"] = False
+                    update["storage"] = _storage_name(local=True, webdav=not use_s3, s3=use_s3)
                     updates[rel] = update
                 except Exception:
                     failed += 1
@@ -1391,17 +1535,28 @@ class ImageStorageService:
             )
             return {"uploaded": len(merged), "skipped": skipped, "failed": failed}
         finally:
-            client.session.close()
+            client.close()
 
     def sync_all(self) -> dict[str, int]:
         settings = self.settings()
-        if self.mode() not in {"webdav", "both"}:
-            raise ImageStorageError("WebDAV 图片存储未启用")
+        mode = self.mode()
+        if mode not in {"webdav", "both", "s3", "local_s3"}:
+            raise ImageStorageError("远程图片存储未启用")
         with interprocess_lock(self._sync_file_lock):
             return self._sync_all_locked(settings)
 
+    def test_storage(self) -> dict[str, object]:
+        mode = self.mode()
+        if mode not in {"webdav", "both", "s3", "local_s3"}:
+            return {"ok": False, "status": 0, "error": "远程图片存储未启用"}
+        client = RemoteStorageClient(mode, self.settings())
+        try:
+            return client.test()
+        finally:
+            client.close()
+
     def test_webdav(self) -> dict[str, object]:
-        return WebDAVClient(self.settings()).test()
+        return self.test_storage()
 
 
 image_storage_service = ImageStorageService()

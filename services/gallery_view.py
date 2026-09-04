@@ -46,13 +46,24 @@ def _unique_texts(values: object) -> list[str]:
     return list(dict.fromkeys(text for value in values if (text := _text(value))))
 
 
-def _storage(item: Mapping[str, object]) -> tuple[str, bool, bool]:
+def _storage(item: Mapping[str, object]) -> tuple[str, bool, bool, bool, str]:
     local = bool(item.get("local", True))
     webdav = bool(item.get("webdav", False))
+    s3 = bool(item.get("s3", False))
+    s3_key = _text(item.get("s3_key"))
     explicit = _text(item.get("storage")).lower()
-    if explicit not in {"local", "webdav", "both"}:
-        explicit = "both" if local and webdav else ("webdav" if webdav else "local")
-    return explicit, local, webdav
+    if explicit not in {"local", "webdav", "both", "s3", "local_s3"}:
+        if local and s3:
+            explicit = "local_s3"
+        elif local and webdav:
+            explicit = "both"
+        elif s3:
+            explicit = "s3"
+        elif webdav:
+            explicit = "webdav"
+        else:
+            explicit = "local"
+    return explicit, local, webdav, s3, s3_key
 
 
 def _expiry(item: Mapping[str, object], retention_hours: int) -> tuple[bool, str | None, int | None]:
@@ -77,7 +88,7 @@ def gallery_row(
 ) -> dict[str, Any]:
     path = _text(item.get("path") or item.get("rel") or item.get("name"))
     filename = _text(item.get("name") or item.get("filename")) or Path(path).name
-    storage, local, webdav = _storage(item)
+    storage, local, webdav, s3, s3_key = _storage(item)
     expired, expires_at, expires_in_seconds = (
         _expiry(item, retention_hours) if local else (False, None, None)
     )
@@ -98,7 +109,9 @@ def gallery_row(
         "storage": storage,
         "local": local,
         "webdav": webdav,
-        "available": local or webdav,
+        "s3": s3,
+        "s3_key": s3_key,
+        "available": local or webdav or s3,
         "width": _positive_int_or_none(item.get("width")),
         "height": _positive_int_or_none(item.get("height")),
         "genbox_push": genbox_push_state(item.get("genbox_push")),

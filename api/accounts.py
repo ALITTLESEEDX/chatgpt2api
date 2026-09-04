@@ -45,6 +45,7 @@ from services.cpa_service import cpa_config, cpa_import_service, list_remote_fil
 from services.log_service import LoggedCall
 from services.oauth_login_service import OAuthLoginError, oauth_login_service
 from services.proxy_management_service import project_proxy_assignment, proxy_management_service
+from services.settings_management_service import settings_management_service
 from services.sub2api_service import (
     list_remote_accounts as sub2api_list_remote_accounts,
     list_remote_groups as sub2api_list_remote_groups,
@@ -56,6 +57,8 @@ from utils.helper import anonymize_token
 
 
 _ACCOUNT_OPERATION_TASKS: set[asyncio.Task[Any]] = set()
+
+ACCOUNT_IMPORT_API_MAX_ITEMS = 500
 
 
 def _schedule_account_operation(coroutine: Any) -> Any:
@@ -99,6 +102,26 @@ class AccountImportCleanupRequest(BaseModel):
     access_tokens: list[str] = Field(default_factory=list)
     account_ids: list[str] = Field(default_factory=list)
     remove: bool = False
+
+
+class AccountImportApiItem(BaseModel):
+    """一条外部推送的 Upstream Account。未列出的字段不会写入账号。"""
+
+    access_token: str = ""
+    refresh_token: str = ""
+    id_token: str = ""
+    email: str = ""
+    password: str = ""
+    two_factor_secret: str = ""
+    status: Literal["正常", "限流", "异常", "禁用"] | None = None
+
+
+class AccountImportApiRequest(BaseModel):
+    accounts: list[AccountImportApiItem] = Field(
+        default_factory=list,
+        max_length=ACCOUNT_IMPORT_API_MAX_ITEMS,
+    )
+    target_group_id: str | None = None
 
 
 class AccountOperationRequest(BaseModel):
@@ -212,6 +235,32 @@ class OAuthLoginFinishRequest(BaseModel):
 
 def _account_payload_token(item: dict[str, Any]) -> str:
     return str(item.get("access_token") or item.get("accessToken") or "").strip()
+
+
+def _account_import_api_payload(
+    item: AccountImportApiItem,
+    target_group_id: str | None,
+) -> dict[str, Any]:
+    """Project one pushed record onto the fields an Upstream Account owns."""
+
+    payload: dict[str, Any] = {
+        "access_token": _clean_text(item.access_token),
+        "source_type": "web",
+    }
+    for key, value in (
+        ("refresh_token", item.refresh_token),
+        ("id_token", item.id_token),
+        ("email", item.email),
+        ("password", item.password),
+        ("two_factor_secret", item.two_factor_secret),
+    ):
+        if (text := _clean_text(value)):
+            payload[key] = text
+    if item.status is not None:
+        payload["status"] = item.status
+    if target_group_id is not None:
+        payload["group_id"] = target_group_id
+    return payload
 
 
 def _unique_tokens(tokens: list[str]) -> list[str]:
@@ -1576,6 +1625,47 @@ def create_router() -> APIRouter:
             "progress_id": progress_id,
             "target_ids": target_ids,
             "errors": initial_errors,
+        }
+
+    @router.post("/api/accounts/import-api")
+    async def import_accounts_via_api(
+            body: AccountImportApiRequest,
+            x_api_key: str | None = Header(default=None, alias="x-api-key"),
+    ):
+        if not await run_in_threadpool(
+            settings_management_service.authenticate_import_api_key,
+            x_api_key or "",
+        ):
+            enabled = await run_in_threadpool(settings_management_service.import_api_enabled)
+            if not enabled:
+                raise HTTPException(status_code=403, detail={"error": "账号导入 API 未启用"})
+            raise HTTPException(status_code=401, detail={"error": "X-API-Key 无效"})
+
+        target_group_id = _target_account_group_id(body.target_group_id)
+        payloads = [
+            payload
+            for item in body.accounts
+            if (payload := _account_import_api_payload(item, target_group_id))["access_token"]
+        ]
+        invalid = len(body.accounts) - len(payloads)
+        if not payloads:
+            raise HTTPException(status_code=400, detail={"error": "accounts[].access_token is required"})
+
+        try:
+            result = await run_in_threadpool(
+                account_service.add_account_items,
+                payloads,
+                return_items=False,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+
+        # 只做本地保存；账号与额度由 account-lifecycle-watcher 后续远程同步。
+        return {
+            "requested": len(body.accounts),
+            "added": max(0, int(result.get("added") or 0)),
+            "skipped": max(0, int(result.get("skipped") or 0)),
+            "invalid": max(0, invalid),
         }
 
     @router.post("/api/accounts/import-cleanup")

@@ -63,6 +63,12 @@ export interface SettingsGenBoxPush {
   auto_push_after_studio: boolean
 }
 
+export interface SettingsAccountImportApi {
+  enabled: boolean
+  api_key: string
+  has_api_key: boolean
+}
+
 export interface Settings {
   proxy_runtime: SettingsProxyRuntimeSettings
   base_url: string
@@ -98,15 +104,22 @@ export interface Settings {
   }
   image_storage: {
     enabled: boolean
-    mode: 'local' | 'webdav' | 'both'
+    mode: 'local' | 'webdav' | 'both' | 's3' | 'local_s3'
     webdav_url: string
     webdav_username: string
     webdav_password: string
     has_webdav_password: boolean
     webdav_root_path: string
+    s3_account_id: string
+    s3_access_key_id: string
+    s3_secret_access_key: string
+    has_s3_secret_access_key: boolean
+    s3_bucket: string
+    s3_prefix: string
     public_base_url: string
   }
   genbox_push: SettingsGenBoxPush
+  account_import_api: SettingsAccountImportApi
   backup: {
     enabled: boolean
     provider: string
@@ -395,7 +408,7 @@ export interface DashboardResponse {
     application_database: Record<string, unknown>
     image_storage: {
       enabled: boolean
-      mode: 'local' | 'webdav' | 'both'
+      mode: 'local' | 'webdav' | 'both' | 's3' | 'local_s3'
       status: 'not_checked'
       available: boolean | null
       image_count: number | null

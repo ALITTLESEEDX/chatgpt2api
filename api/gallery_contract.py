@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 GalleryMediaType = Literal["image"]
 GalleryMediaFilter = Literal["all", "image"]
-GalleryStorage = Literal["local", "webdav", "both"]
+GalleryStorage = Literal["local", "webdav", "both", "s3", "local_s3"]
 GenBoxPushStatus = Literal["imported", "already-imported", "duplicate-local"]
 
 
@@ -39,6 +39,8 @@ class GalleryRow(BaseModel):
     storage: GalleryStorage
     local: bool
     webdav: bool
+    s3: bool = False
+    s3_key: str = ""
     available: bool
     width: int | None = Field(default=None, ge=1)
     height: int | None = Field(default=None, ge=1)

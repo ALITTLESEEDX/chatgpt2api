@@ -2,7 +2,7 @@ import apiClient from './client'
 
 export type GalleryMediaType = 'all' | 'image'
 export type GalleryFileMediaType = Exclude<GalleryMediaType, 'all'>
-export type GalleryStorage = 'local' | 'webdav' | 'both'
+export type GalleryStorage = 'local' | 'webdav' | 'both' | 's3' | 'local_s3'
 
 export type GalleryGenBoxPushStatus = 'imported' | 'already-imported' | 'duplicate-local'
 
@@ -35,6 +35,8 @@ export interface GalleryRow {
   storage: GalleryStorage
   local: boolean
   webdav: boolean
+  s3?: boolean
+  s3_key?: string
   available: boolean
   width: number | null
   height: number | null

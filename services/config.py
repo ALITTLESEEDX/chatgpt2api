@@ -48,6 +48,11 @@ DEFAULT_IMAGE_STORAGE = {
     "webdav_username": "",
     "webdav_password": "",
     "webdav_root_path": "chatgpt2api/images",
+    "s3_account_id": "",
+    "s3_access_key_id": "",
+    "s3_secret_access_key": "",
+    "s3_bucket": "",
+    "s3_prefix": "chatgpt2api/images",
     "public_base_url": "",
 }
 
@@ -58,6 +63,11 @@ DEFAULT_GENBOX_PUSH = {
     "push_key": "",
     "timeout_secs": 20,
     "auto_push_after_studio": False,
+}
+
+DEFAULT_ACCOUNT_IMPORT_API = {
+    "enabled": False,
+    "api_key": "",
 }
 
 DEFAULT_CHAT_COMPLETION_CACHE = {
@@ -167,14 +177,16 @@ def _normalize_backup_settings(value: object) -> dict[str, object]:
 def _normalize_image_storage_settings(value: object) -> dict[str, object]:
     source = value if isinstance(value, dict) else {}
     mode = str(source.get("mode") or "local").strip().lower()
-    if mode not in {"local", "webdav", "both"}:
+    if mode not in {"local", "webdav", "both", "s3", "local_s3"}:
         mode = "local"
     enabled = _normalize_bool(source.get("enabled"), False)
     if not enabled:
         mode = "local"
     root_path = str(source.get("webdav_root_path") or DEFAULT_IMAGE_STORAGE["webdav_root_path"]).strip().strip("/")
+    s3_prefix = str(source.get("s3_prefix") or DEFAULT_IMAGE_STORAGE["s3_prefix"]).strip().strip("/")
     normalized = copy.deepcopy(source)
     normalized.pop("has_webdav_password", None)
+    normalized.pop("has_s3_secret_access_key", None)
     normalized.update({
         "enabled": enabled,
         "mode": mode,
@@ -182,6 +194,11 @@ def _normalize_image_storage_settings(value: object) -> dict[str, object]:
         "webdav_username": str(source.get("webdav_username") or "").strip(),
         "webdav_password": str(source.get("webdav_password") or "").strip(),
         "webdav_root_path": root_path or str(DEFAULT_IMAGE_STORAGE["webdav_root_path"]),
+        "s3_account_id": str(source.get("s3_account_id") or "").strip(),
+        "s3_access_key_id": str(source.get("s3_access_key_id") or "").strip(),
+        "s3_secret_access_key": str(source.get("s3_secret_access_key") or "").strip(),
+        "s3_bucket": str(source.get("s3_bucket") or "").strip(),
+        "s3_prefix": s3_prefix or str(DEFAULT_IMAGE_STORAGE["s3_prefix"]),
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     })
     return normalized
@@ -220,6 +237,17 @@ def _normalize_genbox_push_settings(value: object) -> dict[str, object]:
         "push_key": str(source.get("push_key") or "").strip(),
         "timeout_secs": max(5, min(120, timeout)),
         "auto_push_after_studio": _normalize_bool(source.get("auto_push_after_studio"), False),
+    })
+    return normalized
+
+
+def _normalize_account_import_api_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    normalized = copy.deepcopy(source)
+    normalized.pop("has_api_key", None)
+    normalized.update({
+        "enabled": _normalize_bool(source.get("enabled"), False),
+        "api_key": str(source.get("api_key") or "").strip(),
     })
     return normalized
 
@@ -392,10 +420,25 @@ def _promote_legacy_basic_settings(data: dict[str, object]) -> dict[str, object]
 def _validate_image_storage_settings(settings: dict[str, object]) -> None:
     if not _normalize_bool(settings.get("enabled"), False):
         return
-    if not str(settings.get("webdav_url") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
-    if not str(settings.get("webdav_password") or "").strip():
-        raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+    mode = str(settings.get("mode") or "local").strip().lower()
+    if mode in {"webdav", "both"}:
+        if not str(settings.get("webdav_url") or "").strip():
+            raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV URL")
+        if not str(settings.get("webdav_password") or "").strip():
+            raise ValueError("启用 WebDAV 图片存储后必须填写 WebDAV 密码")
+    elif mode in {"s3", "local_s3"}:
+        missing = []
+        if not str(settings.get("s3_account_id") or "").strip():
+            missing.append("Account ID")
+        if not str(settings.get("s3_access_key_id") or "").strip():
+            missing.append("Access Key ID")
+        if not str(settings.get("s3_secret_access_key") or "").strip():
+            missing.append("Secret Access Key")
+        if not str(settings.get("s3_bucket") or "").strip():
+            missing.append("Bucket")
+        if missing:
+            missing_desc = "、".join(missing)
+            raise ValueError(f"启用 R2 图片存储后必须填写 {missing_desc}")
 
 
 def _validate_genbox_push_settings(settings: dict[str, object]) -> None:
@@ -721,6 +764,7 @@ class ConfigStore:
             data["backup"] = self.get_backup_settings()
             data["image_storage"] = self.get_image_storage_settings()
             data["genbox_push"] = self.get_genbox_push_settings()
+            data["account_import_api"] = self.get_account_import_api_settings()
             data["chat_completion_cache"] = self.get_chat_completion_cache_settings()
             data["proxy_runtime"] = self.get_public_proxy_runtime_settings()
             data["fallback_proxy"] = self.get_proxy_fallback_settings()
@@ -808,6 +852,10 @@ class ConfigStore:
             if "genbox_push" in updates:
                 updates["genbox_push"] = _normalize_genbox_push_settings(updates.get("genbox_push"))
                 _validate_genbox_push_settings(updates["genbox_push"])
+            if "account_import_api" in updates:
+                updates["account_import_api"] = _normalize_account_import_api_settings(
+                    updates.get("account_import_api")
+                )
             if "chat_completion_cache" in updates:
                 updates["chat_completion_cache"] = _normalize_chat_completion_cache_settings(
                     updates.get("chat_completion_cache")
@@ -838,6 +886,9 @@ class ConfigStore:
 
     def get_genbox_push_settings(self) -> dict[str, object]:
         return _normalize_genbox_push_settings(self.data.get("genbox_push"))
+
+    def get_account_import_api_settings(self) -> dict[str, object]:
+        return _normalize_account_import_api_settings(self.data.get("account_import_api"))
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))

@@ -51,6 +51,8 @@ const settingsOptionLabels: Record<string, Record<string, string>> = {
     local: '仅本地',
     webdav: '仅 WebDAV',
     both: '本地 + WebDAV',
+    s3: '仅 Cloudflare R2',
+    local_s3: '本地 + Cloudflare R2',
   },
   'backup.include': {
     image_tasks: '图片任务记录',

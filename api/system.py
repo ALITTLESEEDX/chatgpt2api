@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from api.call_contract import CallDetail, CallLogStatus, CallSummaryPage
@@ -236,6 +236,23 @@ def create_router(app_version: str) -> APIRouter:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail={"error": _settings_write_error_message(exc)}) from exc
+
+    @router.get("/api/settings/account-import-api/key")
+    async def get_account_import_api_key(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        api_key = await run_in_threadpool(settings_management_service.reveal_import_api_key)
+        if not api_key:
+            raise HTTPException(status_code=404, detail={"error": "账号导入密钥尚未生成"})
+        return JSONResponse({"api_key": api_key}, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/settings/account-import-api/key")
+    async def regenerate_account_import_api_key(authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        try:
+            api_key = await run_in_threadpool(settings_management_service.regenerate_import_api_key)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail={"error": _settings_write_error_message(exc)}) from exc
+        return JSONResponse({"api_key": api_key}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/settings/retention-cleanup/preview")
     async def preview_retention_cleanup(body: RetentionCleanupRequest, authorization: str | None = Header(default=None)):
@@ -547,7 +564,7 @@ def create_router(app_version: str) -> APIRouter:
     @router.post("/api/image-storage/test")
     async def test_image_storage_endpoint(authorization: str | None = Header(default=None)):
         require_admin(authorization)
-        return {"result": await run_in_threadpool(image_storage_service.test_webdav)}
+        return {"result": await run_in_threadpool(image_storage_service.test_storage)}
 
     @router.post("/api/image-storage/sync")
     async def sync_image_storage_endpoint(authorization: str | None = Header(default=None)):

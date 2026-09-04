@@ -2683,6 +2683,29 @@ def _generate_single_image(
                 backend.close()
 
 
+def _collect_image_pool_attempts(errors: dict[int, Exception]) -> list[dict[str, Any]]:
+    attempts: list[dict[str, Any]] = []
+    for slot, exc in sorted(errors.items()):
+        raw_attempts = getattr(exc, "image_attempts", None)
+        if not isinstance(raw_attempts, (list, tuple)):
+            continue
+        for attempt_number, raw_attempt in enumerate(raw_attempts, start=1):
+            if not isinstance(raw_attempt, dict):
+                continue
+            attempt = dict(raw_attempt)
+            attempt.setdefault("slot", slot)
+            attempt.setdefault("attempt", attempt_number)
+            if attempt not in attempts:
+                attempts.append(attempt)
+    attempts.sort(
+        key=lambda item: (
+            int(item.get("slot") or 0),
+            int(item.get("attempt") or 0),
+        )
+    )
+    return attempts
+
+
 def _select_image_pool_error(errors: dict[int, Exception]) -> Exception | None:
     """Select one deterministic failure and retain every slot's attempts."""
     if not errors:
@@ -2700,26 +2723,7 @@ def _select_image_pool_error(errors: dict[int, Exception]) -> Exception | None:
     selected_failure = classify_image_exception(selected)
     setattr(selected, "failure", selected_failure)
 
-    attempts: list[dict[str, Any]] = []
-    for slot, exc in sorted(errors.items()):
-        raw_attempts = getattr(exc, "image_attempts", None)
-        if not isinstance(raw_attempts, (list, tuple)):
-            continue
-        for attempt_number, raw_attempt in enumerate(raw_attempts, start=1):
-            if not isinstance(raw_attempt, dict):
-                continue
-            attempt = dict(raw_attempt)
-            attempt.setdefault("slot", slot)
-            attempt.setdefault("attempt", attempt_number)
-            if attempt not in attempts:
-                attempts.append(attempt)
-
-    attempts.sort(
-        key=lambda item: (
-            int(item.get("slot") or 0),
-            int(item.get("attempt") or 0),
-        )
-    )
+    attempts = _collect_image_pool_attempts(errors)
     if attempts:
         setattr(selected, "image_attempts", attempts)
     return selected
@@ -2790,6 +2794,15 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     "failed_index": index,
                     "error": str(exc)[:200],
                 })
+            partial_attempts = _collect_image_pool_attempts(errors)
+            if partial_attempts:
+                yield ImageOutput(
+                    kind="metadata",
+                    model=request.model,
+                    index=0,
+                    total=request.n,
+                    image_attempts=partial_attempts,
+                )
             return
         if selected_error := _select_image_pool_error(errors):
             raise selected_error
@@ -2876,6 +2889,15 @@ def stream_image_outputs_with_pool(request: ConversationRequest) -> Iterator[Ima
                     "failed_index": index,
                     "error": str(errors[index])[:200],
                 })
+        partial_attempts = _collect_image_pool_attempts(errors)
+        if partial_attempts:
+            yield ImageOutput(
+                kind="metadata",
+                model=request.model,
+                index=0,
+                total=request.n,
+                image_attempts=partial_attempts,
+            )
         return
 
     if selected_error := _select_image_pool_error(errors):
@@ -2931,9 +2953,36 @@ def stream_image_chunks(
             )
 
 
+def _public_partial_failures(image_attempts: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures_by_slot: dict[int, dict[str, Any]] = {}
+    for attempt in image_attempts:
+        status = str(attempt.get("status") or "").strip().lower()
+        if status == "success":
+            continue
+        slot = int(attempt.get("slot") or 0)
+        message = str(
+            attempt.get("public_error")
+            or attempt.get("raw_upstream_message")
+            or ""
+        ).strip()
+        code = str(attempt.get("failure_code") or "").strip()
+        if slot <= 0 or not message:
+            continue
+        failure: dict[str, Any] = {"slot": slot, "message": message}
+        if code:
+            failure["code"] = code
+        status_code = attempt.get("status_code")
+        if isinstance(status_code, int):
+            failure["status_code"] = status_code
+        failures_by_slot[slot] = failure
+    return [failures_by_slot[slot] for slot in sorted(failures_by_slot)]
+
+
 def collect_image_outputs(
         outputs: Iterable[ImageOutput],
         result_callback: Callable[[list[dict[str, Any]]], None] | None = None,
+        *,
+        include_partial_failures: bool = False,
 ) -> dict[str, Any]:
     created = None
     data: list[dict[str, Any]] = []
@@ -2991,4 +3040,8 @@ def collect_image_outputs(
         result["_image_urls"] = list(dict.fromkeys(image_urls))
     if image_attempts:
         result["_image_attempts"] = image_attempts
+        if include_partial_failures and data:
+            partial_failures = _public_partial_failures(image_attempts)
+            if partial_failures:
+                result["partial_failures"] = partial_failures
     return result

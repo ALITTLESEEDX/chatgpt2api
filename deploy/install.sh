@@ -129,6 +129,7 @@ text() {
       info_start_docker) printf 'Starting Docker service...' ;;
       info_install_uv) printf 'uv not found, installing...' ;;
       warn_no_npm) printf 'npm not found, skipping frontend build. Existing web_dist will be used if present.' ;;
+      warn_pull_buildable) printf 'Falling back to a plain pull; services with a build section may fail until their image is published.' ;;
       info_build_vue) printf 'Building Vue console...' ;;
       info_install_py) printf 'Installing Python dependencies...' ;;
       info_start_app) printf 'Starting ChatGPT2API on' ;;
@@ -170,6 +171,7 @@ text() {
     info_start_docker) printf '正在启动 Docker 服务...' ;;
     info_install_uv) printf '未找到 uv，正在安装...' ;;
     warn_no_npm) printf '未找到 npm，跳过前端构建；如果已有 web_dist，将继续使用现有文件。' ;;
+    warn_pull_buildable) printf '已回退为普通 pull；带 build 的服务在镜像发布前可能拉取失败。' ;;
     info_build_vue) printf '正在构建 Vue 控制台...' ;;
     info_install_py) printf '正在安装 Python 依赖...' ;;
     info_start_app) printf '正在启动 ChatGPT2API' ;;
@@ -645,7 +647,12 @@ run_docker() {
   fi
 
   ui_println "[$(text prefix_info)] $(text info_start_docker)"
-  (cd "${INSTALL_DIR}" && docker compose "${compose_args[@]}" pull)
+  # sentinel-solver 在本地有 build 段：标签发布前 registry 上可能没有镜像，
+  # --ignore-buildable 让 pull 跳过带 build 的服务，由 up -d 在本地构建。
+  if ! (cd "${INSTALL_DIR}" && docker compose "${compose_args[@]}" pull --ignore-buildable); then
+    ui_println "[$(text prefix_warn)] $(text warn_pull_buildable)"
+    (cd "${INSTALL_DIR}" && docker compose "${compose_args[@]}" pull)
+  fi
   (cd "${INSTALL_DIR}" && docker compose "${compose_args[@]}" up -d)
 }
 

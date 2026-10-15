@@ -87,6 +87,15 @@ docker compose up -d
 
 求解服务的当前状态（实测，2026-10-15）：prepare / finalize / conduit 已经能拿到 200，但求解服务返回的 turnstile 只是令牌种子 `p` 本身（页面里的 `WeakMap` 补丁直接返回入参），上游因此仍把客户端判为不可信，`/backend-api/f/conversation` 返回 404 `Model not found`。网页生图链路尚未恢复，详见 [部署文档](./docs/deployment.md#sentinel-求解服务)。
 
+改动只在源码里（镜像尚未发布）时，在部署机上构建并更新：
+
+```bash
+sudo bash deploy/update.sh            # git 同步 → 构建镜像 → 重建运行时卷 → compose up -d --build
+sudo bash deploy/update.sh --reset    # 上游历史被重写、无法快进时
+```
+
+详见 [部署文档的源码构建升级](./docs/deployment.md#源码构建升级deployupdatesh)。
+
 | 入口            | 地址                       |
 | :-------------- | :------------------------- |
 | 管理控制台      | `http://localhost:3000`    |

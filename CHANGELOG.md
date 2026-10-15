@@ -2,6 +2,8 @@
 
 ## Unreleased
 
++ [新增] 新增 `deploy/update.sh`：在部署机上一条命令完成 git 同步（默认只允许快进，`--reset` 用于上游历史被重写）、构建本地主服务镜像并写回 `CHATGPT2API_IMAGE`、重建 `chatgpt2api-runtime` 运行时卷、`docker compose up -d --build`（含 `sentinel-solver`）；缺少 `SENTINEL_SOLVER_KEY` 时自动生成。
++ [新增] `v*` 标签发布会额外构建并推送求解服务镜像 `ghcr.io/<owner>/chatgpt2api-sentinel-solver`（自带 Chromium，单独打一份，避免每台机器本地装 chromium）；`docker-compose.yml` 的 `sentinel-solver` 默认拉取该镜像，可用 `SENTINEL_SOLVER_IMAGE` 覆盖，本地改了求解器代码时用 `up -d --build` 重新构建。
 + [新增] 新增常驻 Chromium 的 Sentinel 求解服务：`scripts/sentinel_solver.py`（纯标准库 CDP/WebSocket 客户端）、`services/sentinel_solver_service.py` 客户端、`docker/solver.Dockerfile`，并在 `docker-compose.yml` / `docker-compose.local.yml` 中接入 `sentinel-solver`。主服务与 solver 共用 `SENTINEL_SOLVER_KEY`，solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，默认不映射到宿主机端口。未配置或求解失败时回退内置实现。
 + [优化] 默认客户端指纹升级为 Chrome 146 / Edge 148（curl_cffi `chrome146`、User-Agent、`Sec-Ch-Ua-Full-Version(-List)`），此前为 `chrome110` + Edge 143。
 + [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。

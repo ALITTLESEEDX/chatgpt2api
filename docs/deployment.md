@@ -19,9 +19,9 @@ docker compose up -d
 
 ### Sentinel 求解服务
 
-网页链路（生图与文本对话）的 Sentinel turnstile 挑战是随机化 opcode 的 VM，纯 Python 复刻无法通过；主服务需要调用 `sentinel-solver` 这个常驻 Chromium 的求解服务，否则 `/backend-api/f/conversation` 会返回 404 `Model not found`。
+网页链路（生图与文本对话）的 Sentinel turnstile 挑战是随机化 opcode 的 VM，纯 Python 复刻无法通过，因此主服务改为调用 `sentinel-solver`（常驻 Chromium）来执行挑战；求解失败时回退内置实现。接入后的实测状态见本节末尾的「当前限制」。
 
-- `docker-compose.yml` 里的 `sentinel-solver` 从 `docker/solver.Dockerfile` 本地构建，首次 `docker compose up -d` 会自动构建镜像。
+- `docker-compose.yml` 里的 `sentinel-solver` 默认拉取 `v*` 标签上发布的 `ghcr.io/yukkcat/chatgpt2api-sentinel-solver` 镜像（自带 Chromium）；本地改了求解器代码时用 `docker compose up -d --build` 重新构建，或用 `SENTINEL_SOLVER_IMAGE` 指向自己的镜像。`deploy/update.sh` 与 `deploy/install.sh` 都会带上这一步。
 - 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）。`.env.example` 与安装脚本都会生成该值；solver 未设置密钥时拒绝启动。
 - solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8788`，不映射到宿主机。
 - 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连）。
@@ -194,6 +194,33 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
 docker compose ps
 docker logs -f chatgpt2api
 ```
+
+### 源码构建升级（deploy/update.sh）
+
+改动只在源码里（镜像尚未发布）时，用 `deploy/update.sh` 在部署机上构建并更新：
+
+```bash
+sudo bash deploy/update.sh
+```
+
+脚本按顺序执行：`git fetch` + 只允许快进的同步 → 检查 `.env`（缺少 `SENTINEL_SOLVER_KEY` 时自动生成）→ `docker build` 构建主服务镜像并把 `CHATGPT2API_IMAGE` 写回 `.env` → 重建运行时卷 → `docker compose up -d --build`（同时构建 `sentinel-solver`）→ 打印 `ps` 与日志命令。
+
+参数：
+
+| 参数 | 作用 |
+| :--- | :--- |
+| `--reset` | 上游历史被重写、无法快进时执行 `git reset --hard origin/<branch>` |
+| `--allow-dirty` | 配合 `--reset`，允许丢弃工作区未提交改动 |
+| `--no-pull` | 跳过 git 同步 |
+| `--no-build` | 不构建镜像，使用 `.env` 里的 `CHATGPT2API_IMAGE` |
+| `--tag <name>` | 本地镜像 tag，默认 `chatgpt2api:local` |
+| `--keep-runtime` | 不重建运行时卷 |
+
+注意：
+
+- 镜像 `VERSION` 未变化时，入口脚本不会刷新容器内 `/app`，所以脚本默认会删除并重建 `chatgpt2api-runtime` 卷；该卷只是镜像种子与依赖的缓存，业务数据在 `./data` 与 `./config.json`。
+- 脚本会把 `CHATGPT2API_IMAGE` 指向本地构建的镜像，避免 compose 继续使用 registry 上的旧版本；因此不要在这之后执行 `docker compose pull`。
+- 升级后如需回到发布镜像，把 `.env` 的 `CHATGPT2API_IMAGE` 改回 `ghcr.io/yukkcat/chatgpt2api:latest` 再 `docker compose pull && docker compose up -d`。
 
 ## 回滚与维护
 

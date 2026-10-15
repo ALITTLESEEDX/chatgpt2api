@@ -10,9 +10,8 @@ services:
     restart: unless-stopped
     environment:
       SENTINEL_SOLVER_KEY: ${SENTINEL_SOLVER_KEY:?请在 .env 里设置 SENTINEL_SOLVER_KEY}
-      # 浏览器自身出网：留空直连；需要时填 http://host:port，应与主服务访问 chatgpt.com 的出口一致
+      # 默认出网代理/时区（可选）：主服务会按每个请求的实际出口自动带上，通常留空
       SENTINEL_SOLVER_PROXY: ${SENTINEL_SOLVER_PROXY:-}
-      # 页面时区，应与出口 IP 所在地一致
       SENTINEL_SOLVER_TIMEZONE: ${SENTINEL_SOLVER_TIMEZONE:-${TZ:-Asia/Shanghai}}
       # 容器启动时下载 Chromium 用的代理（可选）
       HTTPS_PROXY: ${SENTINEL_SOLVER_DOWNLOAD_PROXY:-}

@@ -16,7 +16,7 @@ Turnstile。主服务本身不打包浏览器，只通过 HTTP 调用这里。
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 页面状态及页面使用的 UA（主服务据此生成 requirements/proof token） |
-| POST | `/v1/turnstile` | `{"dx", "p", "requirements"}` → `{"token", "so"}`；`requirements` 是 prepare 的完整响应，给了它就调用页面自带的 turnstile 模块求解，并在 prepare 要求时用 `conversation-observer` 模块一并算出 SO token（尽力而为，失败为空串）；只给 `dx`/`p` 时退回内置 VM |
+| POST | `/v1/turnstile` | `{"dx", "p", "requirements", "proxy", "timezone"}`（`proxy` / `timezone` 为主服务该请求的出口，solver 用同样的代理和时区开页面） → `{"token", "so"}`；`requirements` 是 prepare 的完整响应，给了它就调用页面自带的 turnstile 模块求解，并在 prepare 要求时用 `conversation-observer` 模块一并算出 SO token（尽力而为，失败为空串）；只给 `dx`/`p` 时退回内置 VM |
 | POST | `/v1/so` | `{"collector_dx", "snapshot_dx", "p"}` → `{"token"}`；目前对话接口还不强制要求 |
 
 `solve` 优先走页面自带的 turnstile 模块（`import` chatgpt.com 自己的 chunk 后调用
@@ -46,7 +46,7 @@ CHATGPT2API_SENTINEL_SOLVER_KEY=<与 SENTINEL_SOLVER_KEY 相同>
 
 Docker 镜像不包含 Chromium；容器启动时由入口脚本下载完整 Chromium 并安装系统依赖，
 成功后才启动 HTTP 服务。首次启动需要联网并以 root 安装依赖，可设置 `HTTPS_PROXY` / `HTTP_PROXY`
-作为下载代理；`SENTINEL_SOLVER_PROXY` 仅控制浏览器访问 chatgpt.com 的代理。
+作为下载代理；浏览器访问 chatgpt.com 的代理由主服务按请求传入，`SENTINEL_SOLVER_PROXY` 只是默认值。
 建议将 `/ms-playwright` 挂载为持久卷，以复用已下载的浏览器；重建容器后仍需安装系统依赖。
 
 未配置或调用失败时，主服务**直接失败**并报出明确错误，不再退回本地求解器：本地求解器跟不上新版
@@ -57,9 +57,10 @@ Docker 镜像不包含 Chromium；容器启动时由入口脚本下载完整 Chr
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `SENTINEL_SOLVER_KEY` | 空 | 访问密钥 |
-| `SENTINEL_SOLVER_PROXY` | 空 | 浏览器出网代理，应与主服务访问 chatgpt.com 的出口一致 |
+| `SENTINEL_SOLVER_PROXY` | 空 | 默认出网代理；主服务调用时会在请求里带上 `proxy`（空串表示直连），优先于此值 |
 | `SENTINEL_SOLVER_USER_AGENT` | 按内置 Chromium 版本生成 | 页面 UA |
-| `SENTINEL_SOLVER_TIMEZONE` | 跟随系统 | 页面时区（如 `Asia/Shanghai`），应与出口 IP 所在地一致 |
+| `SENTINEL_SOLVER_TIMEZONE` | 跟随系统 | 默认页面时区；请求里的 `timezone`（主服务按出口 IP 查询）优先于此值 |
+| `SENTINEL_SOLVER_MAX_PAGES` | 8 | 同时保留的「代理 + 时区」页面数，超出时关闭最久未用的 |
 | `SENTINEL_SOLVER_REFRESH_SECONDS` | 1800 | 页面定期重开的间隔 |
 | `SENTINEL_SOLVER_HEADLESS` | true | 调试时可设为 false |
 | `PORT` | 8080 | 监听端口 |

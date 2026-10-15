@@ -13,9 +13,10 @@ re-synced against the frontend bundle when OpenAI changes the instruction set.
 
 Environment:
 - SENTINEL_SOLVER_KEY: when set, requests must send `Authorization: Bearer <key>`
-- SENTINEL_SOLVER_PROXY: outbound proxy for the browser, should match the main service egress
+- SENTINEL_SOLVER_PROXY: default outbound proxy; the main service sends the proxy of each request, which takes precedence
 - SENTINEL_SOLVER_USER_AGENT: optional, defaults to a Linux Chrome UA built from the bundled Chromium
-- SENTINEL_SOLVER_TIMEZONE: optional page timezone (e.g. Asia/Shanghai), should match the egress IP
+- SENTINEL_SOLVER_TIMEZONE: default page timezone (e.g. Asia/Shanghai); the main service sends the egress timezone per request
+- SENTINEL_SOLVER_MAX_PAGES: max concurrent (proxy, timezone) pages, default 8
 - SENTINEL_SOLVER_REFRESH_SECONDS: how often the page is reopened, default 1800
 - SENTINEL_SOLVER_HEADLESS: default true, set false to debug
 - PORT: listen port, default 8080
@@ -26,6 +27,7 @@ import asyncio
 import hmac
 import os
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -137,6 +139,8 @@ HEADLESS = os.getenv("SENTINEL_SOLVER_HEADLESS", "true").strip().lower() not in 
 # gets room here.
 SDK_SOLVE_TIMEOUT_MS = 120000
 READY_TIMEOUT_SECONDS = 60
+# One page per (proxy, timezone) egress; the least recently used one is closed past this.
+MAX_PAGES = max(1, int(os.getenv("SENTINEL_SOLVER_MAX_PAGES", "8")))
 
 
 def browser_proxy(url: str) -> dict[str, str]:
@@ -151,52 +155,39 @@ def browser_proxy(url: str) -> dict[str, str]:
     return proxy
 
 
-class SolverPage:
-    """Keeps one Cloudflare-cleared chatgpt.com page alive, reopening it when it goes stale."""
+def proxy_label(url: str) -> str:
+    """Log label for a proxy; never includes credentials."""
+    parts = urlsplit(url)
+    return f"{parts.hostname}:{parts.port}" if parts.hostname else "direct"
 
-    def __init__(self) -> None:
-        self._playwright: Playwright | None = None
-        self._browser: Browser | None = None
+
+class SolverPage:
+    """Keeps one Cloudflare-cleared chatgpt.com page alive for one egress, reopening it when it goes stale.
+
+    The page opens through `proxy` with `timezone`, so the Turnstile token is computed
+    from the same IP and timezone the main service's conversation request will use.
+    """
+
+    def __init__(self, browser: Browser, user_agent: str, proxy: str, timezone: str) -> None:
+        self._browser = browser
+        self.user_agent = user_agent
+        self.proxy = proxy
+        self.timezone = timezone
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._opened_at = 0.0
         self._lock = asyncio.Lock()
         self._assets: dict[str, str] = {}
-        self.user_agent = USER_AGENT
         self.last_error = ""
 
-    async def start(self) -> None:
-        self._playwright = await async_playwright().start()
-        launch_kwargs = {
-            "headless": HEADLESS,
-            # channel="chromium" uses full Chromium's new headless mode; the default
-            # headless shell cannot clear the Cloudflare challenge.
-            "channel": "chromium",
-            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-        }
-        if PROXY:
-            launch_kwargs["proxy"] = browser_proxy(PROXY)
-        self._browser = await self._playwright.chromium.launch(**launch_kwargs)
-        if not self.user_agent:
-            major = self._browser.version.split(".")[0]
-            self.user_agent = (
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
-            )
-        try:
-            await self.page()
-        except Exception as exc:  # noqa: BLE001
-            # A page that cannot open yet is not fatal; the first request retries.
-            self.last_error = str(exc)
-            print(f"[sentinel-solver] initial page open failed: {exc}", flush=True)
-
-    async def stop(self) -> None:
+    async def close(self) -> None:
         if self._context is not None:
-            await self._context.close()
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
+            try:
+                await self._context.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._context = None
+            self._page = None
 
     async def page(self) -> Page:
         async with self._lock:
@@ -223,8 +214,10 @@ class SolverPage:
             "viewport": {"width": 1280, "height": 800},
             "user_agent": self.user_agent,
         }
-        if TIMEZONE:
-            context_kwargs["timezone_id"] = TIMEZONE
+        if self.timezone:
+            context_kwargs["timezone_id"] = self.timezone
+        if self.proxy:
+            context_kwargs["proxy"] = browser_proxy(self.proxy)
         context = await self._browser.new_context(**context_kwargs)
         # page.evaluate has no per-call timeout, so widen the context default; the
         # page's own module can take a moment on first use.
@@ -247,7 +240,11 @@ class SolverPage:
         self._page = page
         self._opened_at = time.monotonic()
         self.last_error = ""
-        print(f"[sentinel-solver] chatgpt.com page ready: {await page.title()!r}", flush=True)
+        print(
+            f"[sentinel-solver] chatgpt.com page ready via {proxy_label(self.proxy)} "
+            f"tz={self.timezone or '-'}: {await page.title()!r}",
+            flush=True,
+        )
 
     @staticmethod
     async def _is_ready(page: Page | None) -> bool:
@@ -343,18 +340,80 @@ class SolverPage:
                 await self.invalidate()
         raise RuntimeError("unreachable")
 
+
+
+class SolverPool:
+    """One shared Chromium, one SolverPage per (proxy, timezone) egress."""
+
+    def __init__(self) -> None:
+        self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
+        self._pages: OrderedDict[tuple[str, str], SolverPage] = OrderedDict()
+        self._lock = asyncio.Lock()
+        self.user_agent = USER_AGENT
+
+    async def start(self) -> None:
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=HEADLESS,
+            # channel="chromium" uses full Chromium's new headless mode; the default
+            # headless shell cannot clear the Cloudflare challenge.
+            channel="chromium",
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+            # Chromium only honours a per-context proxy when the browser itself is
+            # launched with this placeholder; contexts without a proxy then go direct.
+            proxy={"server": "per-context"},
+        )
+        if not self.user_agent:
+            major = self._browser.version.split(".")[0]
+            self.user_agent = (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+            )
+        try:
+            await (await self.solver_page(None, None)).page()
+        except Exception as exc:  # noqa: BLE001
+            # A page that cannot open yet is not fatal; the first request retries.
+            print(f"[sentinel-solver] initial page open failed: {exc}", flush=True)
+
+    async def stop(self) -> None:
+        for page in list(self._pages.values()):
+            await page.close()
+        if self._browser is not None:
+            await self._browser.close()
+        if self._playwright is not None:
+            await self._playwright.stop()
+
+    async def solver_page(self, proxy: str | None, timezone: str | None) -> SolverPage:
+        """Page for an egress. `None` falls back to the env defaults; "" proxy means direct."""
+        proxy = PROXY if proxy is None else proxy.strip()
+        timezone = (timezone or TIMEZONE or "").strip()
+        key = (proxy, timezone)
+        evicted: list[SolverPage] = []
+        async with self._lock:
+            page = self._pages.get(key)
+            if page is None:
+                page = self._pages[key] = SolverPage(self._browser, self.user_agent, proxy, timezone)
+            self._pages.move_to_end(key)
+            while len(self._pages) > MAX_PAGES:
+                evicted.append(self._pages.popitem(last=False)[1])
+        for old in evicted:
+            await old.close()
+        return page
+
     def status(self) -> dict[str, object]:
+        # Unauthenticated endpoint: report counts only, never proxy addresses.
+        errors = [page.last_error for page in self._pages.values() if page.last_error]
         return {
-            "ready": self._page is not None and not self._page.is_closed(),
-            "page_age_seconds": int(time.monotonic() - self._opened_at) if self._opened_at else None,
+            "ready": self._browser is not None and self._browser.is_connected(),
             "browser_version": self._browser.version if self._browser else None,
             "user_agent": self.user_agent,
-            "timezone": TIMEZONE or None,
-            "last_error": self.last_error or None,
+            "pages": len(self._pages),
+            "last_error": errors[-1] if errors else None,
         }
 
 
-solver = SolverPage()
+solver = SolverPool()
 
 
 @asynccontextmanager
@@ -374,12 +433,18 @@ class TurnstileRequest(BaseModel):
     # (prepare token, dx, proof-of-work seed, SO handle). No account token,
     # cookie or user prompt is ever sent here.
     requirements: dict[str, Any] | None = None
+    # Egress of the main service's request: open the page through the same proxy and
+    # timezone. proxy=None keeps the solver's env default, "" means direct.
+    proxy: str | None = None
+    timezone: str | None = None
 
 
 class SORequest(BaseModel):
     collector_dx: str
     snapshot_dx: str
     p: str
+    proxy: str | None = None
+    timezone: str | None = None
 
 
 def require_key(authorization: str | None) -> None:
@@ -399,7 +464,8 @@ async def health() -> dict[str, object]:
 async def solve_turnstile(body: TurnstileRequest, authorization: str | None = Header(default=None)) -> dict[str, str]:
     require_key(authorization)
     try:
-        ok, token = await solver.solve_turnstile(body.requirements, body.dx, body.p)
+        page = await solver.solver_page(body.proxy, body.timezone)
+        ok, token = await page.solve_turnstile(body.requirements, body.dx, body.p)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"turnstile solve failed: {exc}") from exc
     if not ok:
@@ -407,7 +473,7 @@ async def solve_turnstile(body: TurnstileRequest, authorization: str | None = He
     so = ""
     if body.requirements:
         try:
-            so = await solver.solve_so(body.requirements, body.p)
+            so = await page.solve_so(body.requirements, body.p)
         except Exception as exc:  # noqa: BLE001
             print(f"[sentinel-solver] SO solve error: {exc}", flush=True)
     return {"token": token, "so": so}
@@ -417,7 +483,8 @@ async def solve_turnstile(body: TurnstileRequest, authorization: str | None = He
 async def solve_so(body: SORequest, authorization: str | None = Header(default=None)) -> dict[str, str]:
     require_key(authorization)
     try:
-        token = await solver.evaluate(
+        page = await solver.solver_page(body.proxy, body.timezone)
+        token = await page.evaluate(
             "([c, s, p]) => window.__sentinelVM.so(c, s, p)", [body.collector_dx, body.snapshot_dx, body.p]
         )
     except Exception as exc:  # noqa: BLE001

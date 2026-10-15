@@ -78,8 +78,19 @@ def solve_turnstile(dx: str, p: str, requirements: dict | None = None) -> str:
     return solve_sentinel(dx, p, requirements)[0]
 
 
-def solve_sentinel(dx: str, p: str, requirements: dict | None = None) -> tuple[str, str]:
+def solve_sentinel(
+    dx: str,
+    p: str,
+    requirements: dict | None = None,
+    proxy: str | None = None,
+    timezone: str | None = None,
+) -> tuple[str, str]:
     """Solve the Turnstile challenge; returns `(turnstile_token, so_token)`.
+
+    `proxy` / `timezone` describe the egress this request actually uses ("" means direct).
+    The solver opens its page through the same proxy and timezone, so the Turnstile
+    token is computed from the same IP the conversation request will come from.
+    `None` leaves the choice to the solver's own defaults.
 
     The SO (session observer) token is best effort and may be empty.
 
@@ -101,6 +112,10 @@ def solve_sentinel(dx: str, p: str, requirements: dict | None = None) -> tuple[s
     body: dict[str, object] = {"dx": dx, "p": p}
     if requirements:
         body["requirements"] = requirements
+    if proxy is not None:
+        body["proxy"] = proxy
+    if timezone:
+        body["timezone"] = timezone
     try:
         response = requests.post(
             f"{base_url}/v1/turnstile",

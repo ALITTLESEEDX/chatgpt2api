@@ -46,6 +46,7 @@ from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uu
 from utils.diagnostics import diagnostic_excerpt
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
+from services.egress_timezone import egress_timezone, timezone_offset_min
 from services.sentinel_solver_client import solve_sentinel, solver_user_agent
 
 
@@ -233,6 +234,7 @@ class OpenAIBackendAPI:
         self._credential_refresh_token = str(self.account.get("refresh_token") or "").strip()
         self._credential_last_token_refresh_at = self.account.get("last_token_refresh_at")
         self._image_turn_trace_id = ""
+        self._egress_timezone = ""
         self.fp = self._build_fp()
         self.user_agent = self.fp["user-agent"]
         self.device_id = self.fp["oai-device-id"]
@@ -524,6 +526,17 @@ class OpenAIBackendAPI:
         retry_after = int(retry_after_header) if str(retry_after_header or "").strip().isdigit() else None
         raise UpstreamHTTPError(path, int(response.status_code), body, retry_after)
 
+    @property
+    def egress_timezone_name(self) -> str:
+        """请求体里的时区与实际代理出口保持一致；首次使用时查询并缓存。"""
+        if not self._egress_timezone:
+            self._egress_timezone = egress_timezone(self.proxy_profile.proxy_url)
+        return self._egress_timezone
+
+    @property
+    def egress_timezone_offset_min(self) -> int:
+        return timezone_offset_min(self.egress_timezone_name)
+
     @staticmethod
     def _is_account_challenge(response: Any) -> bool:
         """账号刷新只重试 Cloudflare 挑战页 403，JSON 403 仍按授权拒绝处理。"""
@@ -566,7 +579,7 @@ class OpenAIBackendAPI:
                     "gizmo_id": None,
                     "requested_default_model": None,
                     "conversation_id": None,
-                    "timezone_offset_min": -480,
+                    "timezone_offset_min": self.egress_timezone_offset_min,
                 },
                 timeout=20,
             )
@@ -578,7 +591,7 @@ class OpenAIBackendAPI:
     def _get_default_account(self) -> Dict[str, Any]:
         path = "/backend-api/accounts/check/v4-2023-04-27"
         response = self._retry_account_challenge(
-            lambda: self.session.get(self.base_url + path + "?timezone_offset_min=-480",
+            lambda: self.session.get(self.base_url + path + f"?timezone_offset_min={self.egress_timezone_offset_min}",
                                      headers=self._headers(path), timeout=20)
         )
         if response.status_code != 200:
@@ -699,7 +712,13 @@ class OpenAIBackendAPI:
         turnstile_info = requirements_payload.get("turnstile") or {}
         if not turnstile_info.get("required"):
             return "", ""
-        return solve_sentinel(turnstile_info.get("dx", ""), source_p, requirements_payload)
+        return solve_sentinel(
+            turnstile_info.get("dx", ""),
+            source_p,
+            requirements_payload,
+            proxy=self.proxy_profile.proxy_url,
+            timezone=self.egress_timezone_name,
+        )
 
     def _build_requirements(self, data: Dict[str, Any], source_p: str = "") -> ChatRequirements:
         """把 sentinel 响应整理成后续对话需要的 token 集合。"""
@@ -839,7 +858,7 @@ class OpenAIBackendAPI:
             "supported_encodings": [],
             "system_hints": [],
             "timezone": timezone,
-            "timezone_offset_min": -480,
+            "timezone_offset_min": self.egress_timezone_offset_min,
             "variant_purpose": "comparison_implicit",
             "websocket_request_id": new_uuid(),
             "client_contextual_info": {
@@ -1244,8 +1263,8 @@ class OpenAIBackendAPI:
             "model": self._image_model_slug(model),
             "parent_message_id": CLIENT_CREATED_ROOT,
             "system_hints": ["picture_v2"],
-            "timezone": "Asia/Shanghai",
-            "timezone_offset_min": -480,
+            "timezone": self.egress_timezone_name,
+            "timezone_offset_min": self.egress_timezone_offset_min,
             "client_contextual_info": {
                 "app_name": "chatgpt.com",
                 "app_surface": "codex_browser",
@@ -1414,8 +1433,8 @@ class OpenAIBackendAPI:
             "parent_message_id": CLIENT_CREATED_ROOT,
             "model": self._image_model_slug(model),
             "system_hints": ["picture_v2"],
-            "timezone_offset_min": -480,
-            "timezone": "Asia/Shanghai",
+            "timezone_offset_min": self.egress_timezone_offset_min,
+            "timezone": self.egress_timezone_name,
             "client_contextual_info": {
                 "app_name": "chatgpt.com",
                 "app_surface": "codex_browser",
@@ -1732,7 +1751,7 @@ class OpenAIBackendAPI:
                 "file_name": file_name,
                 "file_size": len(data),
                 "use_case": "multimodal",
-                "timezone_offset_min": -480,
+                "timezone_offset_min": self.egress_timezone_offset_min,
                 "reset_rate_limits": False,
                 "store_in_library": True,
                 "library_persistence_mode": "opportunistic",
@@ -1811,8 +1830,8 @@ class OpenAIBackendAPI:
             "parent_message_id": "client-created-root",
             "model": EDITABLE_FILE_MODEL,
             "client_prepare_state": "success",
-            "timezone_offset_min": -480,
-            "timezone": "Asia/Shanghai",
+            "timezone_offset_min": self.egress_timezone_offset_min,
+            "timezone": self.egress_timezone_name,
             "conversation_mode": {"kind": "primary_assistant"},
             "system_hints": [],
             "partial_query": {"id": new_uuid(), "author": {"role": "user"}, "content": {"content_type": "text", "parts": [prompt]}},
@@ -1890,8 +1909,8 @@ class OpenAIBackendAPI:
                 "parent_message_id": "client-created-root",
                 "model": EDITABLE_FILE_MODEL,
                 "client_prepare_state": "sent",
-                "timezone_offset_min": -480,
-                "timezone": "Asia/Shanghai",
+                "timezone_offset_min": self.egress_timezone_offset_min,
+                "timezone": self.egress_timezone_name,
                 "conversation_mode": {"kind": "primary_assistant"},
                 "enable_message_followups": True,
                 "system_hints": [],
@@ -2480,8 +2499,8 @@ class OpenAIBackendAPI:
                 "parent_message_id": "client-created-root",
                 "model": model,
                 "client_prepare_state": "success",
-                "timezone_offset_min": -480,
-                "timezone": "Asia/Shanghai",
+                "timezone_offset_min": self.egress_timezone_offset_min,
+                "timezone": self.egress_timezone_name,
                 "conversation_mode": {"kind": "primary_assistant"},
                 "system_hints": ["search"],
                 "partial_query": {"id": new_uuid(), "author": {"role": "user"}, "content": {"content_type": "text", "parts": [prompt]}},
@@ -2530,8 +2549,8 @@ class OpenAIBackendAPI:
                 "parent_message_id": "client-created-root",
                 "model": model,
                 "client_prepare_state": "success",
-                "timezone_offset_min": -480,
-                "timezone": "Asia/Shanghai",
+                "timezone_offset_min": self.egress_timezone_offset_min,
+                "timezone": self.egress_timezone_name,
                 "conversation_mode": {"kind": "primary_assistant"},
                 "enable_message_followups": True,
                 "system_hints": [],

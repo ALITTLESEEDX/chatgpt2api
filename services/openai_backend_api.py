@@ -46,7 +46,7 @@ from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uu
 from utils.diagnostics import diagnostic_excerpt
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
-from services.sentinel_solver_client import solve_turnstile, solver_user_agent
+from services.sentinel_solver_client import solve_sentinel, solver_user_agent
 
 
 @dataclass
@@ -691,15 +691,15 @@ class OpenAIBackendAPI:
         return solver_user_agent() or self.user_agent
 
     def _solve_sentinel_tokens(self, requirements_payload: Dict[str, Any], source_p: str) -> tuple[str, str]:
-        """取 turnstile token；传入完整 prepare 响应，让求解服务调用页面自带的 Turnstile 模块。
+        """取 turnstile 与 SO token；传入完整 prepare 响应，让求解服务调用页面自带的模块。
 
-        未配置或求解失败时 solve_turnstile 直接抛错，不发送空 token（否则对话会伪装返回 404）。
-        SO token 目前对话接口不强制要求，留空。
+        未配置或求解失败时 solve_sentinel 直接抛错，不发送空 token（否则对话会伪装返回 404）。
+        SO token 为尽力而为，求解不出来时留空。
         """
         turnstile_info = requirements_payload.get("turnstile") or {}
         if not turnstile_info.get("required"):
             return "", ""
-        return solve_turnstile(turnstile_info.get("dx", ""), source_p, requirements_payload), ""
+        return solve_sentinel(turnstile_info.get("dx", ""), source_p, requirements_payload)
 
     def _build_requirements(self, data: Dict[str, Any], source_p: str = "") -> ChatRequirements:
         """把 sentinel 响应整理成后续对话需要的 token 集合。"""

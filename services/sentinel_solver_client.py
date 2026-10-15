@@ -74,7 +74,14 @@ def solver_user_agent() -> str:
 
 
 def solve_turnstile(dx: str, p: str, requirements: dict | None = None) -> str:
-    """Solve the Turnstile challenge.
+    """Solve the Turnstile challenge and return only the Turnstile token."""
+    return solve_sentinel(dx, p, requirements)[0]
+
+
+def solve_sentinel(dx: str, p: str, requirements: dict | None = None) -> tuple[str, str]:
+    """Solve the Turnstile challenge; returns `(turnstile_token, so_token)`.
+
+    The SO (session observer) token is best effort and may be empty.
 
     `dx` comes from the prepare response and `p` is the requirements token we sent.
     `requirements` is the whole prepare response — passing it lets the solver call
@@ -115,7 +122,11 @@ def solve_turnstile(dx: str, p: str, requirements: dict | None = None) -> str:
             f"sentinel solver returned HTTP {response.status_code}: {str(response.text or '')[:200]}"
         )
 
-    token = str((response.json() or {}).get("token") or "")
+    data = response.json() or {}
+    token = str(data.get("token") or "")
     if not token:
         raise SentinelSolverError("sentinel solver returned an empty turnstile token")
-    return token
+    if token == p:
+        # 求解器把令牌种子原样返回说明没有真正执行挑战，上游会据此判定客户端不可信。
+        raise SentinelSolverError("sentinel solver echoed the requirements token instead of solving the challenge")
+    return token, str(data.get("so") or "")

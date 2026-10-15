@@ -50,10 +50,13 @@ window.chrome = window.chrome || { runtime: {} };
 #
 # The chunk is content-hashed and changes on every deploy, so it is discovered at
 # solve time instead of being pinned. See `_DISCOVER_TURNSTILE_ASSET`.
-_PINNED_ASSET = "/unauth-mweb/assets/turnstile-DykPLDEM.js"
-_DISCOVER_TURNSTILE_ASSET = """
-() => {
-  const pattern = /\\/turnstile-[^/"']+\\.js/;
+_PINNED_ASSETS = {
+    "turnstile": "/unauth-mweb/assets/turnstile-DykPLDEM.js",
+    "conversation-observer": "/unauth-mweb/assets/conversation-observer-Bnj0Rw-4.js",
+}
+_DISCOVER_ASSET = """
+(name) => {
+  const pattern = new RegExp('/' + name + '-[^/"\\']+\\.js');
   const seen = [];
   const push = (url) => { if (url && pattern.test(url) && !seen.includes(url)) seen.push(url); };
   try { performance.getEntriesByType('resource').forEach((e) => push(e.name)); } catch (err) {}
@@ -84,9 +87,13 @@ async ([requirements, key, asset]) => {
       return 'ERR:getEnforcementToken missing';
     }
     // The SDK looks its seed up in a WeakMap keyed by the requirements object;
-    // hand it the p token instead.
+    // hand it the p token instead. The module's own tokenCache is also a WeakMap
+    // keyed by the same object: patching that one too makes getEnforcementToken
+    // return the seed itself (= p), which the server rejects, so leave it alone.
+    const cache = turnstile.tokenCache;
     const original = WeakMap.prototype.get;
     WeakMap.prototype.get = function (target) {
+      if (this === cache) return original.call(this, target);
       return target === requirements ? key : original.call(this, target);
     };
     try {
@@ -94,6 +101,21 @@ async ([requirements, key, asset]) => {
     } finally {
       WeakMap.prototype.get = original;
     }
+  } catch (error) {
+    return 'ERR:' + String(error).slice(0, 300);
+  }
+}
+"""
+# Session observer (SO) token: collector_dx / snapshot_dx use the same `p` key as dx.
+_SOLVE_SO_VIA_SDK = """
+async ([requirements, key, asset]) => {
+  try {
+    const observer = (await import(asset)).o;
+    if (!observer || typeof observer.collectSessionObserverToken !== 'function') {
+      return 'ERR:collectSessionObserverToken missing';
+    }
+    observer.startSessionObserverCollection(requirements, key);
+    return String((await observer.collectSessionObserverToken(requirements)) || '');
   } catch (error) {
     return 'ERR:' + String(error).slice(0, 300);
   }
@@ -126,7 +148,7 @@ class SolverPage:
         self._page: Page | None = None
         self._opened_at = 0.0
         self._lock = asyncio.Lock()
-        self._turnstile_asset = ""
+        self._assets: dict[str, str] = {}
         self.user_agent = USER_AGENT
         self.last_error = ""
 
@@ -228,46 +250,65 @@ class SolverPage:
         except Exception:  # noqa: BLE001
             return False
 
-    async def turnstile_asset(self) -> str:
-        """Locate chatgpt.com's own turnstile chunk.
+    async def asset(self, name: str) -> str:
+        """Locate one of chatgpt.com's own content-hashed chunks (`turnstile`, `conversation-observer`).
 
-        The file name is content-hashed and changes on every deploy, so look for
-        the URL that is actually loaded on this page first, then scan the page's
-        own scripts for the literal path. The pinned path is only a last resort.
+        The file name changes on every deploy, so look for the URL that is actually
+        loaded on this page first, then scan the page's own scripts for the literal
+        path. The pinned path is only a last resort.
         """
-        if self._turnstile_asset:
-            return self._turnstile_asset
+        if name in self._assets:
+            return self._assets[name]
         try:
-            loaded = await self.evaluate(_DISCOVER_TURNSTILE_ASSET, None)
+            loaded = await self.evaluate(_DISCOVER_ASSET, name)
             if loaded:
-                self._turnstile_asset = str(loaded[0])
-                print(f"[sentinel-solver] turnstile asset (loaded): {self._turnstile_asset}", flush=True)
-                return self._turnstile_asset
-            scanned = await self.evaluate(_SCAN_ASSET_IN_SCRIPTS, r"/unauth-mweb/assets/turnstile-[A-Za-z0-9_-]+\.js")
+                self._assets[name] = str(loaded[0])
+                print(f"[sentinel-solver] {name} asset (loaded): {self._assets[name]}", flush=True)
+                return self._assets[name]
+            scanned = await self.evaluate(
+                _SCAN_ASSET_IN_SCRIPTS, rf"/unauth-mweb/assets/{name}-[A-Za-z0-9_-]+\.js"
+            )
             if scanned:
-                self._turnstile_asset = str(scanned)
-                print(f"[sentinel-solver] turnstile asset (scanned): {self._turnstile_asset}", flush=True)
-                return self._turnstile_asset
+                self._assets[name] = str(scanned)
+                print(f"[sentinel-solver] {name} asset (scanned): {self._assets[name]}", flush=True)
+                return self._assets[name]
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)
-        print(f"[sentinel-solver] turnstile asset discovery fell back to {_PINNED_ASSET}", flush=True)
-        self._turnstile_asset = _PINNED_ASSET
-        return self._turnstile_asset
+        print(f"[sentinel-solver] {name} asset discovery fell back to {_PINNED_ASSETS[name]}", flush=True)
+        self._assets[name] = _PINNED_ASSETS[name]
+        return self._assets[name]
+
+    async def solve_so(self, requirements: dict[str, Any], p: str) -> str:
+        """Session observer token; best effort, the conversation endpoint does not enforce it yet."""
+        so = requirements.get("so") or {}
+        if not (so.get("required") and so.get("collector_dx") and so.get("snapshot_dx")):
+            return ""
+        asset = await self.asset("conversation-observer")
+        try:
+            result = str(await self.evaluate(_SOLVE_SO_VIA_SDK, [requirements, p, asset]) or "")
+        except Exception as exc:  # noqa: BLE001
+            result = f"ERR:{exc}"
+        if result.startswith("ERR:"):
+            print(f"[sentinel-solver] SO solve failed via {asset}: {result[:300]}", flush=True)
+            self._assets.pop("conversation-observer", None)
+            return ""
+        return result
 
     async def solve_turnstile(self, requirements: dict[str, Any] | None, dx: str, p: str) -> tuple[bool, str]:
         """Solve via the page's own turnstile module, falling back to the ported VM."""
         if requirements:
-            asset = await self.turnstile_asset()
+            asset = await self.asset("turnstile")
             try:
                 result = str(await self.evaluate(_SOLVE_VIA_SDK, [requirements, p, asset]) or "")
             except Exception as exc:  # noqa: BLE001
                 result = f"ERR:{exc}"
-            if result and not result.startswith("ERR:"):
+            # Echoing the seed back means the challenge never ran; treat it as a failure.
+            if result and not result.startswith("ERR:") and result != p:
                 return True, result
             self.last_error = result[:300]
             print(f"[sentinel-solver] SDK solve failed via {asset}: {result[:300]}", flush=True)
             # Drop the cached asset and page so the next attempt re-discovers both.
-            self._turnstile_asset = ""
+            self._assets.pop("turnstile", None)
             await self.invalidate()
         if not dx:
             return False, self.last_error or "no dx and no requirements supplied"
@@ -350,7 +391,13 @@ async def solve_turnstile(body: TurnstileRequest, authorization: str | None = He
         raise HTTPException(status_code=503, detail=f"turnstile solve failed: {exc}") from exc
     if not ok:
         raise HTTPException(status_code=503, detail=f"turnstile solve failed: {token[:300]}")
-    return {"token": token}
+    so = ""
+    if body.requirements:
+        try:
+            so = await solver.solve_so(body.requirements, body.p)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sentinel-solver] SO solve error: {exc}", flush=True)
+    return {"token": token, "so": so}
 
 
 @app.post("/v1/so")

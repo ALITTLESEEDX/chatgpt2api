@@ -10,6 +10,8 @@
 + [优化] 求解页面的 User-Agent 用于生成 requirements / proof token，保持与算 Turnstile 的页面一致；finalize 之后清掉受限 `oai-sc` Cookie。
 + [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。
 + [修复] 去掉会话默认的 `Cache-Control: no-cache` 与 `Pragma: no-cache`：实测带这两个头的请求会被 Cloudflare 挑战，`/backend-api/sentinel/chat-requirements/prepare` 等 POST 直接返回 403 挑战页且重试无效；去掉后同一出口返回 200。
++ [修复] 求解服务不再把令牌种子 `p` 当 Turnstile token 返回：只给 sentinel SDK 的密钥映射注入 `p`，不再劫持 turnstile 模块自己的 `tokenCache`（此前 token 与 `p` 逐字节相同，上游据此返回伪装的 404 `Model not found`）；求解结果等于 `p` 时主服务与求解服务都按失败处理。
++ [修复] 求解服务同时计算会话观察者（SO）token，主服务填入 `OpenAI-Sentinel-SO-Token`。
 + [修复] 账号刷新（`/backend-api/me`、`/backend-api/conversation/init`、`/backend-api/accounts/check`）仅对 Cloudflare 挑战页 403 最多尝试三次（间隔 1.5 秒、3 秒），JSON 403 授权拒绝不重试。
 + [修复] 图片对话返回精确的 `404 {"detail":"Model not found"}` 时，账号在当前进程内暂避 10 分钟，不修改额度、账号状态或代理健康。
 + [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge`）时原样重试一次。

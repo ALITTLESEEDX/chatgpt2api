@@ -16,11 +16,11 @@ Turnstile。主服务本身不打包浏览器，只通过 HTTP 调用这里。
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/health` | 页面状态及页面使用的 UA（主服务据此生成 requirements/proof token） |
-| POST | `/v1/turnstile` | `{"dx", "p", "requirements"}` → `{"token"}`；`requirements` 是 prepare 的完整响应，给了它就调用页面自带的 turnstile 模块求解；只给 `dx`/`p` 时退回内置 VM |
+| POST | `/v1/turnstile` | `{"dx", "p", "requirements"}` → `{"token", "so"}`；`requirements` 是 prepare 的完整响应，给了它就调用页面自带的 turnstile 模块求解，并在 prepare 要求时用 `conversation-observer` 模块一并算出 SO token（尽力而为，失败为空串）；只给 `dx`/`p` 时退回内置 VM |
 | POST | `/v1/so` | `{"collector_dx", "snapshot_dx", "p"}` → `{"token"}`；目前对话接口还不强制要求 |
 
 `solve` 优先走页面自带的 turnstile 模块（`import` chatgpt.com 自己的 chunk 后调用
-`getEnforcementToken`）。这个 chunk 文件名带内容哈希、每次发版都变，所以运行时**动态发现**：先看页面
+`getEnforcementToken`）。注入解密密钥时只补 sentinel SDK 内部的那个 `WeakMap`，不能连 turnstile 模块自己的 `tokenCache` 一起劫持，否则 `getEnforcementToken` 会直接返回令牌种子 `p`，上游不认；返回值等于 `p` 视为求解失败。这个 chunk 文件名带内容哈希、每次发版都变，所以运行时**动态发现**：先看页面
 已加载的资源，再扫页面脚本里出现的字面路径，最后才回退到内置 VM。手写 VM 要持续跟版本，而直接调用
 官方模块不需要。
 

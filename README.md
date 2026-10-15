@@ -83,9 +83,7 @@ test -f config.json || printf '{}\n' > config.json
 docker compose up -d
 ```
 
-`docker compose up` 会同时启动 `sentinel-solver`（常驻 Chromium 的网页 turnstile 求解服务），主服务通过 `CHATGPT2API_SENTINEL_SOLVER_*` 指向它，两个容器共用 `SENTINEL_SOLVER_KEY`（未设置时 compose 直接报错）。
-
-求解服务的当前状态（实测，2026-10-15）：prepare / finalize / conduit 已经能拿到 200，但求解服务返回的 turnstile 只是令牌种子 `p` 本身（页面里的 `WeakMap` 补丁直接返回入参），上游因此仍把客户端判为不可信，`/backend-api/f/conversation` 返回 404 `Model not found`。网页生图链路尚未恢复，详见 [部署文档](./docs/deployment.md#sentinel-求解服务)。
+`docker compose up` 会同时启动 `sentinel-solver`（常驻 Chromium，在真实 chatgpt.com 页面里计算 Turnstile），主服务通过 `CHATGPT2API_SENTINEL_SOLVER_*` 指向它，两个容器共用 `SENTINEL_SOLVER_KEY`（未设置时 compose 直接报错）。solver 首次启动需联网下载 Chromium，详见 [部署文档](./docs/deployment.md#sentinel-求解服务)。
 
 改动只在源码里（镜像尚未发布）时，在部署机上构建并更新：
 

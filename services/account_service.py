@@ -161,6 +161,7 @@ class AccountService:
         self._accounts = self._load_accounts()
         self._account_snapshot_checked_at = time.monotonic()
         self._image_inflight: dict[str, int] = {}
+        self._image_unavailable_until: dict[str, float] = {}
         self._image_failure_refresh_lock = Lock()
         self._image_failure_refresh_active: set[str] = set()
         self._image_failure_refresh_active_scopes: dict[str, str] = {}
@@ -1853,6 +1854,7 @@ class AccountService:
                and self._account_matches_source_type(item, source_type)
                and (token := item.get("access_token") or "")
                and token not in excluded
+               and self._image_unavailable_until.get(token, 0.0) <= time.monotonic()
         ]
 
     def _list_available_candidate_tokens(
@@ -1932,6 +1934,13 @@ class AccountService:
             # account lock before considering another candidate so a remote delete
             # or disable cannot be leased from the stale in-memory view.
             self._refresh_accounts_snapshot_if_stale(wait_for_refresh=True)
+
+    def sideline_image_account(self, access_token: str, seconds: int) -> None:
+        """仅在当前进程内暂避图片账号，保留额度和账号状态。"""
+        with self._image_slot_condition:
+            access_token = self._resolve_access_token_locked(access_token)
+            self._image_unavailable_until[access_token] = time.monotonic() + seconds
+            self._image_slot_condition.notify_all()
 
     def _no_ready_candidate_error(
             self,

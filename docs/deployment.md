@@ -19,41 +19,33 @@ docker compose up -d
 
 ### Sentinel 求解服务
 
-网页链路（生图与文本对话）的 Sentinel turnstile 挑战是随机化 opcode 的 VM，纯 Python 复刻无法通过，因此主服务改为调用 `sentinel-solver`（常驻 Chromium）来执行挑战；求解失败时回退内置实现。接入后的实测状态见本节末尾的「当前限制」。
+2026-10-14 起 chatgpt.com 对文字（`/backend-api/conversation`）与生图（`/backend-api/f/conversation`）都校验 sentinel 握手：`chat-requirements` 必须带真实 chatgpt.com 页面里算出的 Turnstile token，requirements / proof token 里的 UA 也要与该页面一致。握手质量不足时对话接口不返回 403，而是伪装成 `404 {"detail":"Model not found"}`。
 
-- `docker-compose.yml` 里的 `sentinel-solver` 默认拉取 `v*` 标签上发布的 `ghcr.io/yukkcat/chatgpt2api-sentinel-solver` 镜像（自带 Chromium）；本地改了求解器代码时用 `docker compose up -d --build` 重新构建，或用 `SENTINEL_SOLVER_IMAGE` 指向自己的镜像。`deploy/update.sh` 与 `deploy/install.sh` 都会带上这一步。
-- 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）。`.env.example` 与安装脚本都会生成该值；solver 未设置密钥时拒绝启动。
-- solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8788`，不映射到宿主机。
-- 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连）。
-- 主服务侧可覆盖的变量：`CHATGPT2API_SENTINEL_SOLVER_ENABLED`、`CHATGPT2API_SENTINEL_SOLVER_URL`、`CHATGPT2API_SENTINEL_SOLVER_KEY`、`CHATGPT2API_SENTINEL_SOLVER_TIMEOUT_SECONDS`。
+因此主服务通过 `sentinel-solver`（`sentinel_solver/`，常驻无头 Chromium + playwright-stealth）计算 Turnstile。未配置或求解失败时主服务直接报错，不发送空 token。详细接口与环境变量见 [`sentinel_solver/README.md`](../sentinel_solver/README.md)。
+
+- `docker-compose.yml` 里的 `sentinel-solver` 默认拉取 `v*` 标签上发布的 `ghcr.io/yukkcat/chatgpt2api-sentinel-solver` 镜像；本地改了求解器代码时用 `docker compose up -d --build` 重新构建（构建上下文 `sentinel_solver/`），或用 `SENTINEL_SOLVER_IMAGE` 指向自己的镜像。`deploy/update.sh` 与 `deploy/install.sh` 都会带上这一步。
+- 镜像不含 Chromium：容器首次启动时由入口脚本下载完整 Chromium 并安装系统依赖，需要联网。`/ms-playwright` 已挂载为 `sentinel-solver-browsers` 卷，重建容器后可复用；下载需要代理时在 `.env` 中设置 `SENTINEL_SOLVER_DOWNLOAD_PROXY`。
+- 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）；请求通过 `Authorization: Bearer <key>` 鉴权。`.env.example` 与安装脚本都会生成该值。
+- solver 只接收挑战参数（`dx`、`p` 与 prepare 响应），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8080`，不映射到宿主机。
+- 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连），应与主服务访问 chatgpt.com 的出口一致；页面时区用 `SENTINEL_SOLVER_TIMEZONE`，应与出口 IP 所在地一致。
+- 主服务侧可覆盖的变量：`CHATGPT2API_SENTINEL_SOLVER_URL`、`CHATGPT2API_SENTINEL_SOLVER_KEY`（也可写入 `config.json` 的 `sentinel_solver_url` / `sentinel_solver_key`，密钥不会通过设置接口返回）。
 
 非容器方式（`MODE=python` 安装或本地开发）需要自行启动求解服务，再让主服务指向它：
 
 ```bash
-SENTINEL_SOLVER_KEY=<长随机串> python scripts/sentinel_solver.py --port 8788 --chrome /usr/bin/chromium
+cd sentinel_solver
+pip install -r requirements.txt
+playwright install --with-deps --no-shell chromium
+SENTINEL_SOLVER_KEY=<长随机串> python app.py
 ```
 
 ```bash
-CHATGPT2API_SENTINEL_SOLVER_ENABLED=true \
-CHATGPT2API_SENTINEL_SOLVER_URL=http://127.0.0.1:8788 \
+CHATGPT2API_SENTINEL_SOLVER_URL=http://127.0.0.1:8080 \
 CHATGPT2API_SENTINEL_SOLVER_KEY=<同一个长随机串> \
 uv run main.py
 ```
 
-排查：`curl -H "X-Solver-Key: <key>" http://127.0.0.1:8788/health`，返回 `{"ok": true, ...}` 表示求解器已就绪；主服务日志里 `sentinel_solver_failed` / `sentinel_solver_rejected` 表示求解失败并已回退到内置实现。
-
-#### 当前限制（2026-10-15 实测）
-
-求解服务已经接入并可用（`bootstrap`、`chat-requirements/prepare`、`/finalize`、图片 `f/conversation/prepare` 全部 200），但**网页生图仍未恢复**：求解服务返回的 turnstile token 与传入的令牌种子 `p` 逐字节相同（`gAAAAAC…`，643 字节；真实浏览器约 7.5KB），上游据此把客户端判为不可信，`/backend-api/f/conversation` 返回 404 `Model not found`。
-
-原因来自上游当前的 turnstile 模块（`/unauth-mweb/assets/turnstile-*.js`）：
-
-- `getEnforcementToken(reqs)` 有三条路径：命中 `tokenCache` 直接返回缓存值 → `reqs.turnstile.dx` 存在时用混淆 VM 解 `dx` → 否则调真实 Cloudflare widget（按 `persona` 选 sitekey）。
-- 求解服务为了让 VM「成功」，把全局 `WeakMap.prototype.get` 打补丁，使 `tokenCache.get(reqs)` 返回 `p`，于是第一条路径直接返回 `p`——这不是可用 token。
-- 真正走 VM 路径时 VM 的第 0 号 opcode 就失败：`0: SyntaxError: Unexpected token '<'`，即 `dx` 用当前页面上下文解不开（`dx` 由账号/会话级密钥加密，匿名页面拿不到）。
-- 匿名页面走 widget 路径则被 Cloudflare 拒绝：`Turnstile challenge failed: 600010`（freeaccount / paid 的 sitekey 不适用于未登录页面）。
-
-因此要恢复生图，需要另外一条能拿到真实 turnstile token 的路径（例如让求解服务持有账号会话，或直接由浏览器完成 `f/conversation` 请求），这超出本次移植范围。
+排查：`curl http://127.0.0.1:8080/health` 返回页面状态与页面使用的 UA 表示求解器已就绪；主服务日志里 `sentinel_solver_error` / `sentinel_solver_failed` 表示求解失败。
 
 ### 本地 PostgreSQL 18
 

@@ -175,4 +175,4 @@ docker compose "${COMPOSE_ARGS[@]}" up -d --build
 # ---------------------------------------------------------------------------
 docker compose "${COMPOSE_ARGS[@]}" ps
 log "查看日志：docker compose ${COMPOSE_ARGS[*]} logs -f app sentinel-solver"
-log "求解器健康检查：docker compose ${COMPOSE_ARGS[*]} exec app python -c \"import urllib.request;print(urllib.request.urlopen('http://sentinel-solver:8788/health').read().decode())\""
+log "求解器健康检查：docker compose ${COMPOSE_ARGS[*]} exec app python -c \"import urllib.request;print(urllib.request.urlopen('http://sentinel-solver:8080/health').read().decode())\""

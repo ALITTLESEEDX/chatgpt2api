@@ -327,6 +327,20 @@ def _download_image_bytes_with_monitor(
     return downloaded_images
 
 
+IMAGE_MODEL_NOT_FOUND_COOLDOWN_SECS = 10 * 60
+
+
+def is_image_model_not_found_error(error: BaseException) -> bool:
+    """仅匹配图片对话接口返回的精确 Model not found 404。"""
+    return (
+        isinstance(error, UpstreamHTTPError)
+        and error.status_code == 404
+        and error.context == "/backend-api/f/conversation"
+        and isinstance(error.body, dict)
+        and error.body.get("detail") == "Model not found"
+    )
+
+
 def is_token_invalid_error(message: str) -> bool:
     text = str(message or "").lower()
     return (
@@ -2566,6 +2580,9 @@ def _generate_single_image(
                 if isinstance(exc, ImageEgressDeadlineError)
                 else classify_image_exception(exc)
             )
+            if is_image_model_not_found_error(exc):
+                # 仅本地暂避账号，不修改额度、有效性或代理健康状态。
+                account_service.sideline_image_account(token, IMAGE_MODEL_NOT_FOUND_COOLDOWN_SECS)
             attempt_conversation_id = str(getattr(exc, "conversation_id", "") or attempt_conversation_id)
             stream_error_ms = int((time.perf_counter() - stream_started) * 1000) if stream_started > 0 else 0
             http_timing = _backend_http_timing_data(backend)

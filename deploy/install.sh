@@ -580,8 +580,11 @@ prepare_docker_bundle() {
   mkdir -p "${INSTALL_DIR}"
   download_file "docker-compose.yml"
   # 求解服务镜像的构建上下文（docker-compose.yml 里的 sentinel-solver 需要）
-  download_file "docker/solver.Dockerfile"
-  download_file "scripts/sentinel_solver.py"
+  local solver_file
+  for solver_file in Dockerfile README.md app.py entrypoint.sh requirements.txt vm.js; do
+    download_file "sentinel_solver/${solver_file}"
+  done
+  chmod +x "${INSTALL_DIR}/sentinel_solver/entrypoint.sh"
   if [[ "${DATABASE_MODE}" == "postgres-local" ]]; then
     download_file "docker-compose.postgres.yml"
   fi

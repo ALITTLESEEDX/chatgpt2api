@@ -3,18 +3,18 @@
 ## Unreleased
 
 + [新增] 新增 `deploy/update.sh`：在部署机上一条命令完成 git 同步（默认只允许快进，`--reset` 用于上游历史被重写）、构建本地主服务镜像并写回 `CHATGPT2API_IMAGE`、重建 `chatgpt2api-runtime` 运行时卷、`docker compose up -d --build`（含 `sentinel-solver`）；缺少 `SENTINEL_SOLVER_KEY` 时自动生成。
-+ [新增] `v*` 标签发布会额外构建并推送求解服务镜像 `ghcr.io/<owner>/chatgpt2api-sentinel-solver`（自带 Chromium，单独打一份，避免每台机器本地装 chromium）；`docker-compose.yml` 的 `sentinel-solver` 默认拉取该镜像，可用 `SENTINEL_SOLVER_IMAGE` 覆盖，本地改了求解器代码时用 `up -d --build` 重新构建。
-+ [新增] 新增常驻 Chromium 的 Sentinel 求解服务：`scripts/sentinel_solver.py`（纯标准库 CDP/WebSocket 客户端）、`services/sentinel_solver_service.py` 客户端、`docker/solver.Dockerfile`，并在 `docker-compose.yml` / `docker-compose.local.yml` 中接入 `sentinel-solver`。主服务与 solver 共用 `SENTINEL_SOLVER_KEY`，solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，默认不映射到宿主机端口。未配置或求解失败时回退内置实现。
++ [新增] `v*` 标签发布会额外构建并推送求解服务镜像 `ghcr.io/<owner>/chatgpt2api-sentinel-solver`（构建上下文 `sentinel_solver/`，Chromium 在容器首次启动时下载，建议挂载 `/ms-playwright` 持久卷）；`docker-compose.yml` 的 `sentinel-solver` 默认拉取该镜像，可用 `SENTINEL_SOLVER_IMAGE` 覆盖，本地改了求解器代码时用 `up -d --build` 重新构建。
++ [新增] 新增常驻 Chromium 的 Sentinel 求解服务 `sentinel_solver/`（FastAPI + Playwright）与客户端 `services/sentinel_solver_client.py`，移植自 PR #418（`vm.js` 来源 MEIZU16/chatgpt2api，MIT）：优先调用 chatgpt.com 页面自带的 Turnstile 模块，回退内置 VM；`docker-compose.yml` / `docker-compose.local.yml` 接入 `sentinel-solver`，主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（`Authorization: Bearer`）。solver 只接收挑战参数，不接收账号 token、Cookie 或 prompt。未配置或求解失败时主服务直接报错，不再发送空 token。
 + [优化] 默认客户端指纹升级为 Chrome 146 / Edge 148（curl_cffi `chrome146`、User-Agent、`Sec-Ch-Ua-Full-Version(-List)`），此前为 `chrome110` + Edge 143。
++ [优化] 网页生图请求体对齐 2026-10 网页端：`model=auto`、`@创建图像` 提及、`client-created-root`、prepare 与对话共用 `X-Oai-Turn-Trace-Id`，图片请求头补齐 Turnstile / SO token。
++ [优化] 求解页面的 User-Agent 用于生成 requirements / proof token，保持与算 Turnstile 的页面一致；finalize 之后清掉受限 `oai-sc` Cookie。
 + [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。
 + [修复] 去掉会话默认的 `Cache-Control: no-cache` 与 `Pragma: no-cache`：实测带这两个头的请求会被 Cloudflare 挑战，`/backend-api/sentinel/chat-requirements/prepare` 等 POST 直接返回 403 挑战页且重试无效；去掉后同一出口返回 200。
++ [修复] 账号刷新（`/backend-api/me`、`/backend-api/conversation/init`、`/backend-api/accounts/check`）仅对 Cloudflare 挑战页 403 最多尝试三次（间隔 1.5 秒、3 秒），JSON 403 授权拒绝不重试。
++ [修复] 图片对话返回精确的 `404 {"detail":"Model not found"}` 时，账号在当前进程内暂避 10 分钟，不修改额度、账号状态或代理健康。
 + [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge`）时原样重试一次。
 + [修复] `chat-requirements/finalize` 请求体改用服务端字段名 `proofofwork` / `turnstile`，此前发送 `proof_token` / `turnstile_token`。
 + [修复] `ensure_ok` 在 `stream=True` 响应上先读出 body 再解析，调用日志不再出现空的 `body=`，`f/conversation` 的真实 404 body（`{"detail":"Model not found"}`）可见。
-+ [修复] 求解容器内 Chromium 补 `--no-sandbox`：容器以 root 运行时 Chromium 直接退出（实测 `Running as root without --no-sandbox is not supported.`），此前求解服务会 CrashLoop；浏览器 stderr 现在落到 `<profile-dir>/chrome.log`，启动失败不再只报「浏览器 CDP 端口未就绪」。
-+ [修复] 求解服务不再把令牌种子 `p` 当 turnstile token 返回：`dx` 是本次 prepare 的 `p` 异或加密的 VM 程序，而 `getEnforcementToken` 先读的 `tokenCache` 与 sentinel SDK 内部的密钥映射都是 `WeakMap`，参考实现的原型补丁把两者一起劫持，导致直接返回 `p`（实测 0.1 秒 / 695 字节）。现在只给 SDK 那个映射注入密钥，VM 正常执行。
-+ [修复] 求解服务同时计算会话观察者 token：prepare 响应的 `so.collector_dx` / `snapshot_dx` 与 `dx` 用同一把 `p` 密钥，调用 `conversation-observer-*.js` 的 `startSessionObserverCollection` 与 `collectSessionObserverToken` 取值；主服务把它填进 `OpenAI-Sentinel-SO-Token`（此前该请求头始终为空）。
-+ [修复] 求解服务在运行时发现 `turnstile-*.js` 与 `conversation-observer-*.js` 的资源名（带构建 hash，会随上游部署变化），不再写死文件名。
 
 ## 3.2.3 - 2026-09-09
 

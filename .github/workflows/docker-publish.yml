@@ -207,12 +207,12 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      # 自带 Chromium，单独打一份镜像，用户就不必在本地装 chromium 等系统包
+      # 求解服务单独打一份镜像；Chromium 在容器首次启动时下载，不进镜像层
       - name: Build and push solver image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./docker/solver.Dockerfile
+          context: ./sentinel_solver
+          file: ./sentinel_solver/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

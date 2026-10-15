@@ -294,13 +294,22 @@ def launch_chrome(cdp_port: int, chrome_bin: str | None, profile_dir: str, proxy
                 break
     if not binary:
         raise RuntimeError("未找到 Chromium/Chrome 可执行文件，请用 --chrome 指定")
-    args = [binary, "--headless=new", "--no-first-run", "--disable-gpu", "--no-default-browser-check",
-            "--disable-dev-shm-usage", f"--remote-debugging-port={cdp_port}", f"--user-data-dir={profile_dir}",
+    # --no-sandbox：容器里以 root 运行时 Chromium 会直接退出
+    # （"Running as root without --no-sandbox is not supported."），隔离边界由容器提供。
+    args = [binary, "--headless=new", "--no-sandbox", "--no-first-run", "--disable-gpu",
+            "--no-default-browser-check", "--disable-dev-shm-usage",
+            f"--remote-debugging-port={cdp_port}", f"--user-data-dir={profile_dir}",
             "about:blank"]
     if proxy:
         args.insert(1, f"--proxy-server={proxy}")
     LOG.info("启动浏览器: %s (cdp %s)", binary, cdp_port)
-    process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log_path = os.path.join(profile_dir, "chrome.log")
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+        log_file: Any = open(log_path, "ab", buffering=0)
+    except OSError:
+        log_file = subprocess.DEVNULL
+    process = subprocess.Popen(args, stdout=log_file, stderr=log_file)
     deadline = time.time() + 40
     while time.time() < deadline:
         try:
@@ -309,7 +318,7 @@ def launch_chrome(cdp_port: int, chrome_bin: str | None, profile_dir: str, proxy
                 return process
         except Exception:
             time.sleep(0.5)
-    raise RuntimeError("浏览器 CDP 端口未就绪")
+    raise RuntimeError(f"浏览器 CDP 端口未就绪；浏览器日志：{log_path}")
 
 
 # ---------------------------------------------------------------------------

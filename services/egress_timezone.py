@@ -15,13 +15,13 @@ from curl_cffi import requests
 from utils.log import logger
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-LOOKUP_TIMEOUT_SECONDS = 6
+LOOKUP_TIMEOUT_SECONDS = 10
 CACHE_SECONDS = 6 * 3600
 FAILURE_CACHE_SECONDS = 60
-# (URL, 响应中的时区字段)；第一个失败时试下一个。
+# (URL, 响应里时区字段的路径)；第一个失败时试下一个。
 LOOKUP_SERVICES = (
-    ("https://ipinfo.io/json", "timezone"),
-    ("https://ipapi.co/json/", "timezone"),
+    ("https://ipinfo.io/json", ("timezone",)),
+    ("https://ipwho.is/", ("timezone", "id")),
 )
 
 _lock = threading.Lock()
@@ -41,10 +41,13 @@ def _valid_timezone(name: object) -> str:
 
 
 def _lookup(proxy_url: str) -> str:
-    for url, field in LOOKUP_SERVICES:
+    for url, path in LOOKUP_SERVICES:
         try:
             response = requests.get(url, proxy=proxy_url or None, timeout=LOOKUP_TIMEOUT_SECONDS)
-            if response.status_code == 200 and (name := _valid_timezone((response.json() or {}).get(field))):
+            value = response.json() if response.status_code == 200 else None
+            for key in path:
+                value = value.get(key) if isinstance(value, dict) else None
+            if name := _valid_timezone(value):
                 return name
         except Exception as exc:  # noqa: BLE001
             logger.warning({"event": "egress_timezone_lookup_failed", "service": url, "error": str(exc)[:160]})

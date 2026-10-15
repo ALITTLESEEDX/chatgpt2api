@@ -360,9 +360,6 @@ class SolverPool:
             # headless shell cannot clear the Cloudflare challenge.
             channel="chromium",
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-            # Chromium only honours a per-context proxy when the browser itself is
-            # launched with this placeholder; contexts without a proxy then go direct.
-            proxy={"server": "per-context"},
         )
         if not self.user_agent:
             major = self._browser.version.split(".")[0]

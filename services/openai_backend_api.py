@@ -734,6 +734,7 @@ class OpenAIBackendAPI:
                 self._sentinel_user_agent(),
                 script_sources=self.pow_script_sources,
                 data_build=self.pow_data_build,
+                timezone=self.egress_timezone_name,
             )
 
         turnstile_token, so_token = self._solve_sentinel_tokens(data, source_p)
@@ -3808,7 +3809,8 @@ class OpenAIBackendAPI:
         base = "/backend-api/sentinel/chat-requirements" if self.access_token else "/backend-anon/sentinel/chat-requirements"
         sentinel_user_agent = self._sentinel_user_agent()
         p_token = build_legacy_requirements_token(
-            sentinel_user_agent, self.pow_script_sources, self.pow_data_build
+            sentinel_user_agent, self.pow_script_sources, self.pow_data_build,
+            timezone=self.egress_timezone_name,
         )
 
         prepare_path = base + "/prepare"
@@ -3834,6 +3836,7 @@ class OpenAIBackendAPI:
                 sentinel_user_agent,
                 script_sources=self.pow_script_sources,
                 data_build=self.pow_data_build,
+                timezone=self.egress_timezone_name,
             )
 
         turnstile_token, so_token = self._solve_sentinel_tokens(prepare_data, p_token)

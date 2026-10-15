@@ -24,7 +24,7 @@ docker compose up -d
 因此主服务通过 `sentinel-solver`（`sentinel_solver/`，常驻无头 Chromium + playwright-stealth）计算 Turnstile。未配置或求解失败时主服务直接报错，不发送空 token。详细接口与环境变量见 [`sentinel_solver/README.md`](../sentinel_solver/README.md)。
 
 - `docker-compose.yml` 里的 `sentinel-solver` 默认拉取 `v*` 标签上发布的 `ghcr.io/yukkcat/chatgpt2api-sentinel-solver` 镜像；本地改了求解器代码时用 `docker compose up -d --build` 重新构建（构建上下文 `sentinel_solver/`），或用 `SENTINEL_SOLVER_IMAGE` 指向自己的镜像。`deploy/update.sh` 与 `deploy/install.sh` 都会带上这一步。
-- 镜像不含 Chromium：容器首次启动时由入口脚本下载完整 Chromium 并安装系统依赖，需要联网。`/ms-playwright` 已挂载为 `sentinel-solver-browsers` 卷，重建容器后可复用；下载需要代理时在 `.env` 中设置 `SENTINEL_SOLVER_DOWNLOAD_PROXY`。
+- 镜像含 Chromium 的系统依赖但不含 Chromium 本体：容器首次启动时由入口脚本下载完整 Chromium，需要联网；之后重建容器几秒内即可就绪。`/ms-playwright` 已挂载为 `sentinel-solver-browsers` 卷，重建容器后可复用；下载需要代理时在 `.env` 中设置 `SENTINEL_SOLVER_DOWNLOAD_PROXY`。
 - 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）；请求通过 `Authorization: Bearer <key>` 鉴权。`.env.example` 与安装脚本都会生成该值。
 - solver 只接收挑战参数（`dx`、`p` 与 prepare 响应），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8080`，不映射到宿主机。
 - **出口自动对齐**：主服务每次调用 solver 时，会带上该请求实际使用的代理（账号代理、账号组、默认出口都生效）和代理出口所在的时区，solver 按「代理 + 时区」各开一个页面（最多 `SENTINEL_SOLVER_MAX_PAGES` 个，默认 8，超出时关闭最久未用的）。因此改代理组不需要改 `.env` 或重启 solver；新出口第一次使用时要多等一次页面加载。主服务请求体里的时区也改为按出口 IP 查询（`ipinfo.io`，失败回退 `Asia/Shanghai`，结果缓存 6 小时）。

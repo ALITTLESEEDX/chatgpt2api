@@ -15,7 +15,7 @@ from curl_cffi import requests
 from utils.log import logger
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-LOOKUP_TIMEOUT_SECONDS = 10
+LOOKUP_TIMEOUT_SECONDS = 5
 CACHE_SECONDS = 6 * 3600
 FAILURE_CACHE_SECONDS = 60
 # (URL, 响应里时区字段的路径)；第一个失败时试下一个。

@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from html.parser import HTMLParser
 from typing import Any, Sequence
 
@@ -128,10 +129,39 @@ def _serialize(value: Any) -> str:
     return _btoa(_to_json(value))
 
 
-def _js_date_string() -> str:
-    """等价于 JS `"" + new Date`，例如 `Thu Oct 15 2026 14:07:06 GMT+0800 (中国标准时间)`。"""
-    now = datetime.now().astimezone()
-    return f"{now.strftime('%a %b %d %Y %H:%M:%S')} GMT{now.strftime('%z')} ({now.tzname() or 'UTC'})"
+# zh-CN 页面里 `Date#toString` 括号中的时区名：(标准时间, 夏令时间)；未收录的时区退回缩写。
+_ZH_TIMEZONE_NAMES = {
+    "Asia/Shanghai": ("中国标准时间", ""),
+    "Asia/Tokyo": ("日本标准时间", ""),
+    "Asia/Seoul": ("韩国标准时间", ""),
+    "Asia/Hong_Kong": ("香港标准时间", ""),
+    "Asia/Taipei": ("台北标准时间", ""),
+    "Asia/Singapore": ("新加坡标准时间", ""),
+    "UTC": ("协调世界时", ""),
+    "Europe/London": ("格林尼治标准时间", "英国夏令时间"),
+    "Europe/Berlin": ("中欧标准时间", "中欧夏令时间"),
+    "Europe/Paris": ("中欧标准时间", "中欧夏令时间"),
+    "America/New_York": ("北美东部标准时间", "北美东部夏令时间"),
+    "America/Chicago": ("北美中部标准时间", "北美中部夏令时间"),
+    "America/Denver": ("北美山区标准时间", "北美山区夏令时间"),
+    "America/Los_Angeles": ("北美太平洋标准时间", "北美太平洋夏令时间"),
+}
+
+
+def _js_date_string(timezone: str = "") -> str:
+    """等价于 JS `"" + new Date`，例如 `Thu Oct 15 2026 14:07:06 GMT+0800 (中国标准时间)`。
+
+    `timezone` 为出口所在的 IANA 时区；留空时用本机时区。它必须与请求体和求解页面的时区一致，
+    握手里同时出现两个时区会被判为不可信。
+    """
+    try:
+        now = datetime.now(ZoneInfo(timezone)) if timezone else datetime.now().astimezone()
+    except Exception:  # noqa: BLE001
+        now = datetime.now().astimezone()
+        timezone = ""
+    names = _ZH_TIMEZONE_NAMES.get(timezone)
+    name = (names[1] if names and names[1] and now.dst() else names[0]) if names else (now.tzname() or "UTC")
+    return f"{now.strftime('%a %b %d %Y %H:%M:%S')} GMT{now.strftime('%z')} ({name})"
 
 
 def _fnv1a_32_hex(text: str) -> str:
@@ -164,13 +194,14 @@ def build_pow_config(
     languages: Sequence[str] | None = None,
     language: str = DEFAULT_LANGUAGE,
     sid: str = "",
+    timezone: str = "",
 ) -> list[Any]:
     """构造 SDK getConfig() 的 25 项指纹数组。"""
     script_source = random.choice(list(script_sources)) if script_sources else DEFAULT_POW_SCRIPT
     language_list = list(languages) if languages else list(DEFAULT_LANGUAGES)
     return [
         screen_size,                                   # 0  screen.width + screen.height
-        _js_date_string(),                             # 1  "" + new Date
+        _js_date_string(timezone),                     # 1  "" + new Date
         js_heap_limit,                                 # 2  performance.memory.jsHeapSizeLimit
         1,                                             # 3  尝试次数（种子 token 固定为 1）
         user_agent,                                    # 4  navigator.userAgent

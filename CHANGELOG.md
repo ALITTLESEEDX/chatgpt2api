@@ -9,11 +9,13 @@
 + [优化] 网页生图请求体对齐 2026-10 网页端：`model=auto`、`@创建图像` 提及、`client-created-root`、prepare 与对话共用 `X-Oai-Turn-Trace-Id`，图片请求头补齐 Turnstile / SO token。
 + [优化] 求解页面的 User-Agent 用于生成 requirements / proof token，保持与算 Turnstile 的页面一致；finalize 之后清掉受限 `oai-sc` Cookie。
 + [优化] 求解服务自动对齐出口：主服务调用时带上该请求实际使用的代理和出口时区，求解服务按「代理 + 时区」各开一个页面（`SENTINEL_SOLVER_MAX_PAGES`，默认 8），改代理组不再需要同步 `.env` 或重启；`SENTINEL_SOLVER_PROXY` / `SENTINEL_SOLVER_TIMEZONE` 只作为默认值。
++ [优化] 求解服务镜像在构建阶段安装 Chromium 的系统依赖，入口脚本不再每次启动都 `apt` 安装；此前每次重建容器都有约一分钟求解服务不可用，期间所有生图请求连接被拒。
 + [优化] 主服务请求体里的时区（`timezone` / `timezone_offset_min`）不再写死 `Asia/Shanghai` / `-480`，改为按代理出口 IP 查询（失败回退 `Asia/Shanghai`，缓存 6 小时）。
 + [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。
 + [修复] 去掉会话默认的 `Cache-Control: no-cache` 与 `Pragma: no-cache`：实测带这两个头的请求会被 Cloudflare 挑战，`/backend-api/sentinel/chat-requirements/prepare` 等 POST 直接返回 403 挑战页且重试无效；去掉后同一出口返回 200。
 + [修复] 求解服务不再把令牌种子 `p` 当 Turnstile token 返回：只给 sentinel SDK 的密钥映射注入 `p`，不再劫持 turnstile 模块自己的 `tokenCache`（此前 token 与 `p` 逐字节相同，上游据此返回伪装的 404 `Model not found`）；求解结果等于 `p` 时主服务与求解服务都按失败处理。
 + [修复] 求解服务同时计算会话观察者（SO）token，主服务填入 `OpenAI-Sentinel-SO-Token`。
++ [修复] 握手里的时区保持一致：PoW 指纹中的 `Date` 字符串也按出口时区生成（此前用容器本地时区，与请求体、求解页面的出口时区同时出现会导致上游返回 404 `Model not found`）。
 + [修复] 求解服务的 `SENTINEL_SOLVER_PROXY` 支持 `http://user:pass@host:port`：账号密码拆给 Playwright 单独传递，此前带认证的代理 URL 浏览器无法使用，求解页面只能直连，与主服务出口不一致。
 + [修复] 账号刷新（`/backend-api/me`、`/backend-api/conversation/init`、`/backend-api/accounts/check`）仅对 Cloudflare 挑战页 403 最多尝试三次（间隔 1.5 秒、3 秒），JSON 403 授权拒绝不重试。
 + [修复] 图片对话返回精确的 `404 {"detail":"Model not found"}` 时，账号在当前进程内暂避 10 分钟，不修改额度、账号状态或代理健康。

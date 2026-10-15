@@ -236,6 +236,89 @@ DEFAULT_CHROME_CANDIDATES = [
 ]
 
 
+# 求解脚本（在常驻页面里执行）。资源名带构建 hash，会随上游部署变化，因此先试已知名再运行时发现。
+KNOWN_ASSETS = {
+    "turnstile": ["/unauth-mweb/assets/turnstile-DykPLDEM.js"],
+    "conversation-observer": ["/unauth-mweb/assets/conversation-observer-Bnj0Rw-4.js"],
+}
+
+SOLVE_SCRIPT = """
+(async () => {
+  const reqs = __REQS__, key = __KEY__, KNOWN = __KNOWN__;
+  const ASSET = (name) => '/unauth-mweb/assets/' + name;
+
+  async function discover(prefix) {
+    const names = new Set();
+    try {
+      const html = await (await fetch('/', {credentials: 'include'})).text();
+      for (const m of html.matchAll(/([A-Za-z0-9._-]+\\.js)/g)) names.add(m[1]);
+    } catch (error) { /* ignore */ }
+    for (const el of Array.from(document.scripts || [])) {
+      const last = (el.src || '').split('/').pop();
+      if (last && last.endsWith('.js')) names.add(last);
+    }
+    const found = [];
+    let budget = 12;
+    for (const name of names) {
+      if (name.startsWith(prefix + '-')) found.push(ASSET(name));
+      if (budget-- <= 0) continue;
+      try {
+        const text = await (await fetch(ASSET(name), {credentials: 'include'})).text();
+        const m = new RegExp('(' + prefix + '-[A-Za-z0-9_-]+\\\\.js)').exec(text);
+        if (m) found.push(ASSET(m[1]));
+      } catch (error) { /* ignore */ }
+    }
+    return found;
+  }
+
+  async function load(prefix, test) {
+    const urls = [...(KNOWN[prefix] || []), ...await discover(prefix)];
+    for (const url of urls) {
+      try {
+        const mod = await import(url);
+        if (test(mod)) return mod;
+      } catch (error) { /* 试下一个候选 */ }
+    }
+    return null;
+  }
+
+  const out = {turnstile: '', so: '', turnstileError: '', soError: ''};
+  const turnstileModule = await load('turnstile',
+    (m) => m && m.turnstile && typeof m.turnstile.getEnforcementToken === 'function');
+  if (!turnstileModule) {
+    out.error = 'turnstile module not found; page=' + location.href;
+    return JSON.stringify(out);
+  }
+  try {
+    // dx 是本次 prepare 的令牌种子 p 异或加密的 VM 程序；密钥来自 sentinel SDK 内部的 WeakMap，
+    // 页面外拿不到，只能补在这个映射上。注意不能连 turnstile 模块自己的 tokenCache 一起劫持：
+    // 那样 getEnforcementToken 会直接返回密钥（= p），上游不认。
+    const cache = turnstileModule.turnstile.tokenCache;
+    const original = WeakMap.prototype.get;
+    WeakMap.prototype.get = function (target) {
+      if (this === cache) return original.call(this, target);
+      return target === reqs ? key : original.call(this, target);
+    };
+    try { out.turnstile = String(await turnstileModule.turnstile.getEnforcementToken(reqs)); }
+    finally { WeakMap.prototype.get = original; }
+  } catch (error) { out.turnstileError = String(error).slice(0, 300); }
+
+  try {
+    const observer = await load('conversation-observer',
+      (m) => m && m.o && typeof m.o.collectSessionObserverToken === 'function');
+    if (!observer) out.soError = 'observer module not found';
+    else {
+      // collector_dx / snapshot_dx 与 dx 用同一把密钥；collector 先跑并写入 VM 状态，snapshot 再取 token
+      observer.o.startSessionObserverCollection(reqs, key);
+      out.so = String((await observer.o.collectSessionObserverToken(reqs)) || '');
+    }
+  } catch (error) { out.soError = String(error).slice(0, 300); }
+
+  return JSON.stringify(out);
+})()
+"""
+
+
 class BrowserPool:
     """常驻一个页面，串行处理求解请求。"""
 
@@ -262,27 +345,31 @@ class BrowserPool:
         self._page = page
         return page
 
-    def solve(self, requirements: dict, p_token: str) -> tuple[bool, str]:
-        script = """
-        (async () => {
-          const reqs = %s, key = %s;
-          try {
-            const { turnstile } = await import('/unauth-mweb/assets/turnstile-DykPLDEM.js');
-            const original = WeakMap.prototype.get;
-            WeakMap.prototype.get = function (target) {
-              return target === reqs ? key : original.call(this, target);
-            };
-            try { return String(await turnstile.getEnforcementToken(reqs)); }
-            finally { WeakMap.prototype.get = original; }
-          } catch (error) { return 'ERR:' + String(error).slice(0, 300); }
-        })()
-        """ % (json.dumps(requirements), json.dumps(p_token))
+    def solve(self, requirements: dict, p_token: str) -> tuple[bool, dict[str, str]]:
+        """在常驻页面里算 sentinel token：turnstile + 会话观察者（SO）。
+
+        `dx` / `collector_dx` / `snapshot_dx` 都是被本次 prepare 的令牌种子 `p` 异或加密的 VM 程序：
+        - turnstile 模块通过 sentinel SDK 的 WeakMap 取解密密钥，页面外拿不到，这里用原型补丁只补这一个映射；
+        - 会话观察者模块的 `startSessionObserverCollection(requirements, key)` 直接接收密钥。
+        """
+        script = (
+            SOLVE_SCRIPT.replace("__REQS__", json.dumps(requirements))
+            .replace("__KEY__", json.dumps(p_token))
+            .replace("__KNOWN__", json.dumps(KNOWN_ASSETS))
+        )
         with self._lock:
             page = self.page()
-            token = str(page.evaluate(script, timeout=180) or "")
-        if token.startswith("ERR:"):
-            return False, token[4:]
-        return bool(token), token
+            raw = str(page.evaluate(script, timeout=180) or "")
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return False, {"error": raw[:300]}
+        if not isinstance(data, dict) or data.get("error"):
+            return False, {"error": str((data or {}).get("error") or "solver failed")[:300]}
+        turnstile = str(data.get("turnstile") or "")
+        if not turnstile:
+            return False, {"error": str(data.get("turnstileError") or "empty turnstile token")[:300]}
+        return True, {"turnstile": turnstile, "so": str(data.get("so") or "")}
 
 
 def launch_chrome(cdp_port: int, chrome_bin: str | None, profile_dir: str, proxy: str = "") -> subprocess.Popen:
@@ -367,14 +454,16 @@ def make_handler(pool: BrowserPool, key: str):
                 return self._send(400, {"ok": False, "error": "requirements/p required"})
             started = time.time()
             try:
-                ok, token = pool.solve(requirements, str(p_token))
+                ok, result = pool.solve(requirements, str(p_token))
             except Exception as exc:
                 LOG.warning("求解失败: %s", str(exc)[:200])
                 return self._send(500, {"ok": False, "error": str(exc)[:200]})
-            LOG.info("求解%s，耗时 %.1fs，token 长度 %d", "成功" if ok else "失败", time.time() - started, len(token))
             if not ok:
-                return self._send(200, {"ok": False, "error": token[:300]})
-            return self._send(200, {"ok": True, "turnstile": token})
+                LOG.info("求解失败，耗时 %.1fs，原因 %s", time.time() - started, str(result.get("error"))[:200])
+                return self._send(200, {"ok": False, "error": str(result.get("error") or "solve failed")[:300]})
+            LOG.info("求解成功，耗时 %.1fs，turnstile %d 字符、so %d 字符",
+                     time.time() - started, len(result["turnstile"]), len(result.get("so") or ""))
+            return self._send(200, {"ok": True, "turnstile": result["turnstile"], "so": result.get("so") or ""})
 
     return Handler
 

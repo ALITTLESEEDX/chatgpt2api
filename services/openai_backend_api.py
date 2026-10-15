@@ -644,23 +644,27 @@ class OpenAIBackendAPI:
             "Upgrade-Insecure-Requests": "1",
         }
 
-    def _solve_turnstile(self, requirements_payload: Dict[str, Any], source_p: str) -> str:
-        """取 turnstile token：优先外部 sentinel solver（真实 Chromium 环境），否则回退内置实现。
+    def _solve_sentinel_tokens(self, requirements_payload: Dict[str, Any], source_p: str) -> tuple[str, str]:
+        """取 turnstile 与会话观察者（SO）token：优先外部 sentinel solver，否则回退内置实现。
 
         纯 Python 的 VM 复刻跟不上当前随机化 opcode 的版本，因此默认建议接入 solver；
-        未配置 solver 时行为与之前一致。
+        未配置 solver 时行为与之前一致（turnstile 走内置实现、SO 为空）。
         """
         turnstile_info = requirements_payload.get("turnstile") or {}
-        if not (turnstile_info.get("required") and turnstile_info.get("dx")):
-            return ""
+        needs_turnstile = bool(turnstile_info.get("required") and turnstile_info.get("dx"))
+        so_info = requirements_payload.get("so") or {}
+        needs_so = bool(so_info.get("required") and so_info.get("collector_dx") and so_info.get("snapshot_dx"))
+        if not needs_turnstile and not needs_so:
+            return "", ""
+        solved: Dict[str, str] | None = None
         try:
-            token = sentinel_solver_service.solve_turnstile(requirements_payload, source_p)
+            solved = sentinel_solver_service.solve(requirements_payload, source_p)
         except Exception as exc:
             logger.warning({"event": "sentinel_solver_exception", "error": str(exc)[:200]})
-            token = None
-        if token:
-            return token
-        return solve_turnstile_token(turnstile_info["dx"], source_p) or ""
+        turnstile_token = str((solved or {}).get("turnstile") or "")
+        if needs_turnstile and not turnstile_token:
+            turnstile_token = solve_turnstile_token(turnstile_info["dx"], source_p) or ""
+        return turnstile_token, str((solved or {}).get("so") or "")
 
     def _build_requirements(self, data: Dict[str, Any], source_p: str = "") -> ChatRequirements:
         """把 sentinel 响应整理成后续对话需要的 token 集合。"""
@@ -678,13 +682,13 @@ class OpenAIBackendAPI:
                 data_build=self.pow_data_build,
             )
 
-        turnstile_token = self._solve_turnstile(data, source_p)
+        turnstile_token, so_token = self._solve_sentinel_tokens(data, source_p)
 
         return ChatRequirements(
             token=data.get("token", ""),
             proof_token=proof_token,
             turnstile_token=turnstile_token,
-            so_token=data.get("so_token", ""),
+            so_token=so_token or data.get("so_token", ""),
             raw_finalize=data,
         )
 
@@ -3744,7 +3748,7 @@ class OpenAIBackendAPI:
                 data_build=self.pow_data_build,
             )
 
-        turnstile_token = self._solve_turnstile(prepare_data, p_token)
+        turnstile_token, so_token = self._solve_sentinel_tokens(prepare_data, p_token)
 
         finalize_path = base + "/finalize"
         response = self._fetch(
@@ -3771,7 +3775,7 @@ class OpenAIBackendAPI:
             token=token,
             proof_token=proof_token,
             turnstile_token=turnstile_token,
-            so_token=data.get("so_token", ""),
+            so_token=so_token or data.get("so_token", ""),
             raw_finalize=data,
         )
 

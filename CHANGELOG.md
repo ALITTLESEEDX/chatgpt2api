@@ -11,6 +11,10 @@
 + [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge`）时原样重试一次。
 + [修复] `chat-requirements/finalize` 请求体改用服务端字段名 `proofofwork` / `turnstile`，此前发送 `proof_token` / `turnstile_token`。
 + [修复] `ensure_ok` 在 `stream=True` 响应上先读出 body 再解析，调用日志不再出现空的 `body=`，`f/conversation` 的真实 404 body（`{"detail":"Model not found"}`）可见。
++ [修复] 求解容器内 Chromium 补 `--no-sandbox`：容器以 root 运行时 Chromium 直接退出（实测 `Running as root without --no-sandbox is not supported.`），此前求解服务会 CrashLoop；浏览器 stderr 现在落到 `<profile-dir>/chrome.log`，启动失败不再只报「浏览器 CDP 端口未就绪」。
++ [修复] 求解服务不再把令牌种子 `p` 当 turnstile token 返回：`dx` 是本次 prepare 的 `p` 异或加密的 VM 程序，而 `getEnforcementToken` 先读的 `tokenCache` 与 sentinel SDK 内部的密钥映射都是 `WeakMap`，参考实现的原型补丁把两者一起劫持，导致直接返回 `p`（实测 0.1 秒 / 695 字节）。现在只给 SDK 那个映射注入密钥，VM 正常执行。
++ [修复] 求解服务同时计算会话观察者 token：prepare 响应的 `so.collector_dx` / `snapshot_dx` 与 `dx` 用同一把 `p` 密钥，调用 `conversation-observer-*.js` 的 `startSessionObserverCollection` 与 `collectSessionObserverToken` 取值；主服务把它填进 `OpenAI-Sentinel-SO-Token`（此前该请求头始终为空）。
++ [修复] 求解服务在运行时发现 `turnstile-*.js` 与 `conversation-observer-*.js` 的资源名（带构建 hash，会随上游部署变化），不再写死文件名。
 
 ## 3.2.3 - 2026-09-09
 

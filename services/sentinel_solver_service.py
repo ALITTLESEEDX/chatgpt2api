@@ -24,7 +24,7 @@ class SentinelSolverError(RuntimeError):
 
 
 class SentinelSolverService:
-    """调用外部 sentinel solver 取 turnstile token。"""
+    """调用外部 sentinel solver 取 turnstile 与会话观察者（SO）token。"""
 
     def settings(self) -> dict[str, Any]:
         value = config.get_sentinel_solver_settings()
@@ -58,8 +58,8 @@ class SentinelSolverService:
             headers["X-Solver-Key"] = key
         return headers
 
-    def solve_turnstile(self, requirements: dict[str, Any], p_token: str, timeout: float | None = None) -> str | None:
-        """返回 turnstile token；未配置或失败时返回 None（由调用方回退）。"""
+    def solve(self, requirements: dict[str, Any], p_token: str, timeout: float | None = None) -> dict[str, str] | None:
+        """返回 {"turnstile": ..., "so": ...}；未配置或失败时返回 None（由调用方回退）。"""
         settings = self.settings()
         if not self.enabled():
             return None
@@ -87,8 +87,10 @@ class SentinelSolverService:
                 "error": str((data or {}).get("error") or "")[:200],
             })
             return None
-        token = str(data.get("turnstile") or "").strip()
-        return token or None
+        turnstile = str(data.get("turnstile") or "").strip()
+        if not turnstile:
+            return None
+        return {"turnstile": turnstile, "so": str(data.get("so") or "").strip()}
 
 
 sentinel_solver_service = SentinelSolverService()

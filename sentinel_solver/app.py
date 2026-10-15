@@ -29,6 +29,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException
@@ -138,6 +139,18 @@ SDK_SOLVE_TIMEOUT_MS = 120000
 READY_TIMEOUT_SECONDS = 60
 
 
+def browser_proxy(url: str) -> dict[str, str]:
+    """Playwright 要求代理账号密码单独传，不能写在 server URL 里。"""
+    parts = urlsplit(url)
+    if not parts.hostname or not parts.port:
+        return {"server": url}
+    proxy = {"server": f"{parts.scheme or 'http'}://{parts.hostname}:{parts.port}"}
+    if parts.username:
+        proxy["username"] = unquote(parts.username)
+        proxy["password"] = unquote(parts.password or "")
+    return proxy
+
+
 class SolverPage:
     """Keeps one Cloudflare-cleared chatgpt.com page alive, reopening it when it goes stale."""
 
@@ -162,7 +175,7 @@ class SolverPage:
             "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
         }
         if PROXY:
-            launch_kwargs["proxy"] = {"server": PROXY}
+            launch_kwargs["proxy"] = browser_proxy(PROXY)
         self._browser = await self._playwright.chromium.launch(**launch_kwargs)
         if not self.user_agent:
             major = self._browser.version.split(".")[0]

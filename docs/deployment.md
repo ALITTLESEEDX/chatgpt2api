@@ -27,7 +27,7 @@ docker compose up -d
 - 镜像不含 Chromium：容器首次启动时由入口脚本下载完整 Chromium 并安装系统依赖，需要联网。`/ms-playwright` 已挂载为 `sentinel-solver-browsers` 卷，重建容器后可复用；下载需要代理时在 `.env` 中设置 `SENTINEL_SOLVER_DOWNLOAD_PROXY`。
 - 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）；请求通过 `Authorization: Bearer <key>` 鉴权。`.env.example` 与安装脚本都会生成该值。
 - solver 只接收挑战参数（`dx`、`p` 与 prepare 响应），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8080`，不映射到宿主机。
-- 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连），应与主服务访问 chatgpt.com 的出口一致；页面时区用 `SENTINEL_SOLVER_TIMEZONE`，应与出口 IP 所在地一致。
+- 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连），应与主服务访问 chatgpt.com 的出口一致（可写 `http://user:pass@host:port`，主服务的代理组改了出口时这里也要同步）；页面时区用 `SENTINEL_SOLVER_TIMEZONE`，应与出口 IP 所在地一致。
 - 主服务侧可覆盖的变量：`CHATGPT2API_SENTINEL_SOLVER_URL`、`CHATGPT2API_SENTINEL_SOLVER_KEY`（也可写入 `config.json` 的 `sentinel_solver_url` / `sentinel_solver_key`，密钥不会通过设置接口返回）。
 
 非容器方式（`MODE=python` 安装或本地开发）需要自行启动求解服务，再让主服务指向它：

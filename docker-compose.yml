@@ -1,8 +1,32 @@
 services:
+  # Sentinel 求解服务：常驻 Chromium 执行网页 turnstile 挑战（网页生图必需）
+  # 只接收挑战参数（prepare 响应 + 令牌种子 p），不接收账号 token / Cookie / prompt
+  sentinel-solver:
+    build:
+      context: .
+      dockerfile: docker/solver.Dockerfile
+    container_name: chatgpt2api-solver
+    restart: unless-stopped
+    environment:
+      SENTINEL_SOLVER_KEY: ${SENTINEL_SOLVER_KEY:?请在 .env 里设置 SENTINEL_SOLVER_KEY}
+      SENTINEL_SOLVER_HOST: 0.0.0.0
+      SENTINEL_SOLVER_PORT: "8788"
+      SENTINEL_SOLVER_CHROME: /usr/bin/chromium
+      SENTINEL_SOLVER_PROFILE_DIR: /tmp/solver-profile
+      # 浏览器自身出网：留空直连；需要时填 http://host:port
+      SENTINEL_SOLVER_PROXY: ${SENTINEL_SOLVER_PROXY:-}
+    expose:
+      - "8788"
+    # 只在本机调试时打开（默认不暴露到宿主机）
+    # ports:
+    #   - "127.0.0.1:8788:8788"
+
   app:
     image: ${CHATGPT2API_IMAGE:-ghcr.io/yukkcat/chatgpt2api:latest}
     container_name: chatgpt2api
     restart: unless-stopped
+    depends_on:
+      - sentinel-solver
     ports:
       - "${CHATGPT2API_PORT:-3000}:80"
     volumes:
@@ -14,6 +38,11 @@ services:
       CHATGPT2API_AUTH_KEY: ${CHATGPT2API_AUTH_KEY:-}
       CHATGPT2API_BASE_URL: ${CHATGPT2API_BASE_URL:-}
       CHATGPT2API_THREAD_TOKENS: ${CHATGPT2API_THREAD_TOKENS:-120}
+      # Sentinel 求解服务（容器内用服务名访问）
+      CHATGPT2API_SENTINEL_SOLVER_ENABLED: "true"
+      CHATGPT2API_SENTINEL_SOLVER_URL: http://sentinel-solver:8788
+      CHATGPT2API_SENTINEL_SOLVER_KEY: ${SENTINEL_SOLVER_KEY:?请在 .env 里设置 SENTINEL_SOLVER_KEY}
+      CHATGPT2API_SENTINEL_SOLVER_TIMEOUT_SECONDS: ${CHATGPT2API_SENTINEL_SOLVER_TIMEOUT_SECONDS:-180}
       TZ: ${TZ:-Asia/Shanghai}
 
 volumes:

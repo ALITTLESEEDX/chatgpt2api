@@ -46,6 +46,7 @@ from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uu
 from utils.diagnostics import diagnostic_excerpt
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
+from services.sentinel_solver_service import sentinel_solver_service
 from utils.turnstile import solve_turnstile_token
 
 
@@ -262,14 +263,15 @@ class OpenAIBackendAPI:
             "Origin": self.base_url,
             "Referer": self.base_url + "/",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-US;q=0.7",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache",
+            # 不要在这里加 Cache-Control/Pragma: no-cache：实测带上它们时 Cloudflare 会对
+            # /backend-api/sentinel/chat-requirements/prepare 之类的 POST 直接返回挑战页 403，
+            # 且重试无效（去掉后同一出口 200）。
             "Priority": "u=1, i",
             "Sec-Ch-Ua": self.fp["sec-ch-ua"],
             "Sec-Ch-Ua-Arch": '"x86"',
             "Sec-Ch-Ua-Bitness": '"64"',
-            "Sec-Ch-Ua-Full-Version": '"143.0.3650.96"',
-            "Sec-Ch-Ua-Full-Version-List": '"Microsoft Edge";v="143.0.3650.96", "Chromium";v="143.0.7499.147", "Not A(Brand";v="24.0.0.0"',
+            "Sec-Ch-Ua-Full-Version": '"148.0.0.0"',
+            "Sec-Ch-Ua-Full-Version-List": '"Microsoft Edge";v="148.0.0.0", "Chromium";v="148.0.0.0", "Not A(Brand";v="24.0.0.0"',
             "Sec-Ch-Ua-Mobile": self.fp["sec-ch-ua-mobile"],
             "Sec-Ch-Ua-Model": '""',
             "Sec-Ch-Ua-Platform": self.fp["sec-ch-ua-platform"],
@@ -323,12 +325,12 @@ class OpenAIBackendAPI:
         fp.setdefault(
             "user-agent",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
+            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
         )
-        fp.setdefault("impersonate", "chrome110")
+        fp.setdefault("impersonate", "chrome146")
         fp.setdefault("oai-device-id", new_uuid())
         fp.setdefault("oai-session-id", new_uuid())
-        fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"')
+        fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="148", "Chromium";v="148", "Not A(Brand";v="24"')
         fp.setdefault("sec-ch-ua-mobile", "?0")
         fp.setdefault("sec-ch-ua-platform", '"Windows"')
         return fp
@@ -642,6 +644,24 @@ class OpenAIBackendAPI:
             "Upgrade-Insecure-Requests": "1",
         }
 
+    def _solve_turnstile(self, requirements_payload: Dict[str, Any], source_p: str) -> str:
+        """取 turnstile token：优先外部 sentinel solver（真实 Chromium 环境），否则回退内置实现。
+
+        纯 Python 的 VM 复刻跟不上当前随机化 opcode 的版本，因此默认建议接入 solver；
+        未配置 solver 时行为与之前一致。
+        """
+        turnstile_info = requirements_payload.get("turnstile") or {}
+        if not (turnstile_info.get("required") and turnstile_info.get("dx")):
+            return ""
+        try:
+            token = sentinel_solver_service.solve_turnstile(requirements_payload, source_p)
+        except Exception as exc:
+            logger.warning({"event": "sentinel_solver_exception", "error": str(exc)[:200]})
+            token = None
+        if token:
+            return token
+        return solve_turnstile_token(turnstile_info["dx"], source_p) or ""
+
     def _build_requirements(self, data: Dict[str, Any], source_p: str = "") -> ChatRequirements:
         """把 sentinel 响应整理成后续对话需要的 token 集合。"""
         if (data.get("arkose") or {}).get("required"):
@@ -658,10 +678,7 @@ class OpenAIBackendAPI:
                 data_build=self.pow_data_build,
             )
 
-        turnstile_token = ""
-        turnstile_info = data.get("turnstile") or {}
-        if turnstile_info.get("required") and turnstile_info.get("dx"):
-            turnstile_token = solve_turnstile_token(turnstile_info["dx"], source_p) or ""
+        turnstile_token = self._solve_turnstile(data, source_p)
 
         return ChatRequirements(
             token=data.get("token", ""),
@@ -1192,7 +1209,8 @@ class OpenAIBackendAPI:
             "supported_encodings": ["v1"],
             "client_contextual_info": {"app_name": "chatgpt.com"},
         }
-        response = self.session.post(
+        response = self._fetch(
+            "post",
             self.base_url + path,
             headers=self._image_headers(path, requirements),
             json=payload,
@@ -1233,7 +1251,8 @@ class OpenAIBackendAPI:
         width, height = image.size
         mime_type = Image.MIME.get(image.format, "image/png")
         path = "/backend-api/files"
-        response = self.session.post(
+        response = self._fetch(
+            "post",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
             json={"file_name": file_name, "file_size": len(data), "use_case": "multimodal", "width": width,
@@ -1259,7 +1278,8 @@ class OpenAIBackendAPI:
         )
         ensure_ok(response, "image_upload", credential_scope="signed_asset")
         path = f"/backend-api/files/{upload_meta['file_id']}/uploaded"
-        response = self.session.post(
+        response = self._fetch(
+            "post",
             self.base_url + path,
             headers=self._headers(path, {"Content-Type": "application/json", "Accept": "application/json"}),
             data="{}",
@@ -1352,7 +1372,8 @@ class OpenAIBackendAPI:
             previous_total_timeout = curl_options.get(CurlOpt.TIMEOUT_MS)
             curl_options[CurlOpt.TIMEOUT_MS] = int(transport_timeout_secs * 1000)
         try:
-            response = self.session.post(
+            response = self._fetch(
+                "post",
                 self.base_url + path,
                 headers=self._image_headers(path, requirements, conduit_token, "text/event-stream"),
                 json=payload,
@@ -3640,9 +3661,36 @@ class OpenAIBackendAPI:
         finally:
             response.close()
 
+    @staticmethod
+    def _is_cloudflare_challenge(response: Any) -> bool:
+        """Cloudflare 挑战页：状态码 >= 400 且带 cf-mitigated: challenge。"""
+        if getattr(response, "status_code", 0) < 400:
+            return False
+        headers = getattr(response, "headers", None)
+        value = str(headers.get("cf-mitigated") or "") if headers is not None else ""
+        return value.strip().lower() == "challenge"
+
+    def _fetch(self, method: str, url: str, **kwargs: Any) -> Any:
+        """发请求；若被 Cloudflare 挑战则原样重试一次。
+
+        挑战响应的 Set-Cookie 会带上 clearance，重试即可拿到真实内容；
+        不重试的话后面 `/backend-api/f/conversation` 会返回 403 Unusual activity。
+        """
+        request = getattr(self.session, method)
+        response = request(url, **kwargs)
+        if self._is_cloudflare_challenge(response):
+            try:
+                response.close()
+            except Exception:
+                pass
+            logger.info({"event": "cloudflare_challenge_retry", "method": method, "url": url})
+            response = request(url, **kwargs)
+        return response
+
     def _bootstrap(self, timeout_secs: float = 30.0) -> None:
         """预热首页，并提取 PoW 相关脚本引用。"""
-        response = self.session.get(
+        response = self._fetch(
+            "get",
             self.base_url + "/",
             headers=self._bootstrap_headers(),
             timeout=timeout_secs,
@@ -3672,7 +3720,8 @@ class OpenAIBackendAPI:
         p_token = build_legacy_requirements_token(self.user_agent, self.pow_script_sources, self.pow_data_build)
 
         prepare_path = base + "/prepare"
-        response = self.session.post(
+        response = self._fetch(
+            "post",
             self.base_url + prepare_path,
             headers=self._headers(prepare_path, {"Content-Type": "application/json"}),
             json={"p": p_token},
@@ -3695,19 +3744,18 @@ class OpenAIBackendAPI:
                 data_build=self.pow_data_build,
             )
 
-        turnstile_token = ""
-        turnstile_info = prepare_data.get("turnstile") or {}
-        if turnstile_info.get("required") and turnstile_info.get("dx"):
-            turnstile_token = solve_turnstile_token(turnstile_info["dx"], p_token) or ""
+        turnstile_token = self._solve_turnstile(prepare_data, p_token)
 
         finalize_path = base + "/finalize"
-        response = self.session.post(
+        response = self._fetch(
+            "post",
             self.base_url + finalize_path,
             headers=self._headers(finalize_path, {"Content-Type": "application/json"}),
             json={
+                # 键名必须与服务端一致：finalize 读的是 proofofwork / turnstile
                 "prepare_token": prepare_data.get("prepare_token", ""),
-                "proof_token": proof_token,
-                "turnstile_token": turnstile_token,
+                **({"proofofwork": proof_token} if proof_token else {}),
+                **({"turnstile": turnstile_token} if turnstile_token else {}),
             },
             timeout=request_timeout(),
         )

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
++ [新增] 新增常驻 Chromium 的 Sentinel 求解服务：`scripts/sentinel_solver.py`（纯标准库 CDP/WebSocket 客户端）、`services/sentinel_solver_service.py` 客户端、`docker/solver.Dockerfile`，并在 `docker-compose.yml` / `docker-compose.local.yml` 中接入 `sentinel-solver`。主服务与 solver 共用 `SENTINEL_SOLVER_KEY`，solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，默认不映射到宿主机端口。未配置或求解失败时回退内置实现。
++ [优化] 默认客户端指纹升级为 Chrome 146 / Edge 148（curl_cffi `chrome146`、User-Agent、`Sec-Ch-Ua-Full-Version(-List)`），此前为 `chrome110` + Edge 143。
++ [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。
++ [修复] 去掉会话默认的 `Cache-Control: no-cache` 与 `Pragma: no-cache`：实测带这两个头的请求会被 Cloudflare 挑战，`/backend-api/sentinel/chat-requirements/prepare` 等 POST 直接返回 403 挑战页且重试无效；去掉后同一出口返回 200。
++ [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge`）时原样重试一次。
++ [修复] `chat-requirements/finalize` 请求体改用服务端字段名 `proofofwork` / `turnstile`，此前发送 `proof_token` / `turnstile_token`。
++ [修复] `ensure_ok` 在 `stream=True` 响应上先读出 body 再解析，调用日志不再出现空的 `body=`，`f/conversation` 的真实 404 body（`{"detail":"Model not found"}`）可见。
+
 ## 3.2.3 - 2026-09-09
 
 + [新增] Python 图片接口和共享模型列表支持 `gpt-image-2.5`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`，通过 ChatGPT Web 的 `auto` 路由兼容，不包含 `exact` 别名。

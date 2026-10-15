@@ -70,6 +70,15 @@ DEFAULT_ACCOUNT_IMPORT_API = {
     "api_key": "",
 }
 
+DEFAULT_SENTINEL_SOLVER = {
+    "enabled": False,
+    "url": "",
+    "key": "",
+    "timeout_seconds": 180,
+}
+
+SENTINEL_SOLVER_ENV_PREFIX = "CHATGPT2API_SENTINEL_SOLVER_"
+
 DEFAULT_CHAT_COMPLETION_CACHE = {
     "enabled": True,
     "ttl_seconds": 60,
@@ -250,6 +259,28 @@ def _normalize_account_import_api_settings(value: object) -> dict[str, object]:
         "api_key": str(source.get("api_key") or "").strip(),
     })
     return normalized
+
+
+def _normalize_sentinel_solver_settings(value: object) -> dict[str, object]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "enabled": _normalize_bool(source.get("enabled"), bool(DEFAULT_SENTINEL_SOLVER["enabled"])),
+        "url": str(source.get("url") or "").strip().rstrip("/"),
+        "key": str(source.get("key") or "").strip(),
+        "timeout_seconds": _normalize_positive_int(
+            source.get("timeout_seconds"), int(DEFAULT_SENTINEL_SOLVER["timeout_seconds"]), 1,
+        ),
+    }
+
+
+def _sentinel_solver_env_values() -> dict[str, object]:
+    """环境变量里显式给出的求解服务配置（容器部署由 compose 注入）。"""
+    values: dict[str, object] = {}
+    for key in DEFAULT_SENTINEL_SOLVER:
+        raw = os.getenv(f"{SENTINEL_SOLVER_ENV_PREFIX}{key.upper()}")
+        if raw is not None and raw.strip():
+            values[key] = raw.strip()
+    return values
 
 
 def _normalize_chat_completion_cache_settings(value: object) -> dict[str, object]:
@@ -892,6 +923,13 @@ class ConfigStore:
 
     def get_chat_completion_cache_settings(self) -> dict[str, object]:
         return _normalize_chat_completion_cache_settings(self.data.get("chat_completion_cache"))
+
+    def get_sentinel_solver_settings(self) -> dict[str, object]:
+        """Sentinel 求解服务配置；环境变量按 key 覆盖仓库里的值（容器部署由 compose 注入）。"""
+        raw = self.data.get("sentinel_solver")
+        source = dict(raw) if isinstance(raw, dict) else {}
+        source.update(_sentinel_solver_env_values())
+        return _normalize_sentinel_solver_settings(source)
 
     def get_storage_backend(self) -> StorageBackend:
         """获取存储后端实例（单例）"""

@@ -9,6 +9,7 @@ PORT="${CHATGPT2API_PORT:-${PORT:-3000}}"
 THREAD_TOKENS="${CHATGPT2API_THREAD_TOKENS:-${THREAD_TOKENS:-120}}"
 MODE="${MODE:-}"
 AUTH_KEY="${CHATGPT2API_AUTH_KEY:-${AUTH_KEY:-}}"
+SENTINEL_SOLVER_KEY="${SENTINEL_SOLVER_KEY:-}"
 DATABASE_MODE="${DATABASE_MODE:-}"
 DATABASE_URL="${DATABASE_URL:-}"
 POSTGRES_DB_INPUT="${POSTGRES_DB:-}"
@@ -576,6 +577,9 @@ prepare_docker_bundle() {
 
   mkdir -p "${INSTALL_DIR}"
   download_file "docker-compose.yml"
+  # 求解服务镜像的构建上下文（docker-compose.yml 里的 sentinel-solver 需要）
+  download_file "docker/solver.Dockerfile"
+  download_file "scripts/sentinel_solver.py"
   if [[ "${DATABASE_MODE}" == "postgres-local" ]]; then
     download_file "docker-compose.postgres.yml"
   fi
@@ -614,6 +618,7 @@ CHATGPT2API_PORT=${PORT}
 CHATGPT2API_THREAD_TOKENS=${THREAD_TOKENS}
 CHATGPT2API_IMAGE=$(default_image)
 CHATGPT2API_BASE_URL=
+SENTINEL_SOLVER_KEY=${SENTINEL_SOLVER_KEY}
 
 DATABASE_MODE=${DATABASE_MODE}
 DATABASE_URL=${DATABASE_URL}
@@ -701,6 +706,14 @@ main() {
     AUTH_KEY="$(generate_auth_key)"
   fi
   AUTH_KEY="$(prompt_input "$(text prompt_auth)" "${AUTH_KEY}")"
+
+  # 求解服务密钥：重复安装时复用已有 .env 的值，避免 solver 与主服务密钥不一致
+  if [[ -z "${SENTINEL_SOLVER_KEY}" ]]; then
+    SENTINEL_SOLVER_KEY="$(read_existing_env_value SENTINEL_SOLVER_KEY)"
+  fi
+  if [[ -z "${SENTINEL_SOLVER_KEY}" ]]; then
+    SENTINEL_SOLVER_KEY="$(generate_auth_key)"
+  fi
 
   validate_inputs
   if [[ "${MODE}" == "docker" ]]; then

@@ -17,6 +17,44 @@ docker compose up -d
 
 镜像中的 `/opt/chatgpt2api` 是只读应用种子，`/app` 是受管运行目录。首次启动或镜像版本变化时，入口脚本会用镜像种子刷新 `/app`，再按锁文件同步 Python 依赖；同一镜像正常重启时会保留控制台在线更新后的运行版本。业务数据始终留在独立的 `data/` 挂载中。
 
+### Sentinel 求解服务
+
+网页链路（生图与文本对话）的 Sentinel turnstile 挑战是随机化 opcode 的 VM，纯 Python 复刻无法通过；主服务需要调用 `sentinel-solver` 这个常驻 Chromium 的求解服务，否则 `/backend-api/f/conversation` 会返回 404 `Model not found`。
+
+- `docker-compose.yml` 里的 `sentinel-solver` 从 `docker/solver.Dockerfile` 本地构建，首次 `docker compose up -d` 会自动构建镜像。
+- 主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（在 `.env` 中设置，长随机串）。`.env.example` 与安装脚本都会生成该值；solver 未设置密钥时拒绝启动。
+- solver 只接收挑战参数（prepare 响应 + 令牌种子 `p`），不接收账号 token、Cookie 或 prompt，且默认只监听容器内网 `8788`，不映射到宿主机。
+- 浏览器自身出网需要代理时，在 `.env` 中设置 `SENTINEL_SOLVER_PROXY=http://host:port`（留空直连）。
+- 主服务侧可覆盖的变量：`CHATGPT2API_SENTINEL_SOLVER_ENABLED`、`CHATGPT2API_SENTINEL_SOLVER_URL`、`CHATGPT2API_SENTINEL_SOLVER_KEY`、`CHATGPT2API_SENTINEL_SOLVER_TIMEOUT_SECONDS`。
+
+非容器方式（`MODE=python` 安装或本地开发）需要自行启动求解服务，再让主服务指向它：
+
+```bash
+SENTINEL_SOLVER_KEY=<长随机串> python scripts/sentinel_solver.py --port 8788 --chrome /usr/bin/chromium
+```
+
+```bash
+CHATGPT2API_SENTINEL_SOLVER_ENABLED=true \
+CHATGPT2API_SENTINEL_SOLVER_URL=http://127.0.0.1:8788 \
+CHATGPT2API_SENTINEL_SOLVER_KEY=<同一个长随机串> \
+uv run main.py
+```
+
+排查：`curl -H "X-Solver-Key: <key>" http://127.0.0.1:8788/health`，返回 `{"ok": true, ...}` 表示求解器已就绪；主服务日志里 `sentinel_solver_failed` / `sentinel_solver_rejected` 表示求解失败并已回退到内置实现。
+
+#### 当前限制（2026-10-15 实测）
+
+求解服务已经接入并可用（`bootstrap`、`chat-requirements/prepare`、`/finalize`、图片 `f/conversation/prepare` 全部 200），但**网页生图仍未恢复**：求解服务返回的 turnstile token 与传入的令牌种子 `p` 逐字节相同（`gAAAAAC…`，643 字节；真实浏览器约 7.5KB），上游据此把客户端判为不可信，`/backend-api/f/conversation` 返回 404 `Model not found`。
+
+原因来自上游当前的 turnstile 模块（`/unauth-mweb/assets/turnstile-*.js`）：
+
+- `getEnforcementToken(reqs)` 有三条路径：命中 `tokenCache` 直接返回缓存值 → `reqs.turnstile.dx` 存在时用混淆 VM 解 `dx` → 否则调真实 Cloudflare widget（按 `persona` 选 sitekey）。
+- 求解服务为了让 VM「成功」，把全局 `WeakMap.prototype.get` 打补丁，使 `tokenCache.get(reqs)` 返回 `p`，于是第一条路径直接返回 `p`——这不是可用 token。
+- 真正走 VM 路径时 VM 的第 0 号 opcode 就失败：`0: SyntaxError: Unexpected token '<'`，即 `dx` 用当前页面上下文解不开（`dx` 由账号/会话级密钥加密，匿名页面拿不到）。
+- 匿名页面走 widget 路径则被 Cloudflare 拒绝：`Turnstile challenge failed: 600010`（freeaccount / paid 的 sitekey 不适用于未登录页面）。
+
+因此要恢复生图，需要另外一条能拿到真实 turnstile token 的路径（例如让求解服务持有账号会话，或直接由浏览器完成 `f/conversation` 请求），这超出本次移植范围。
+
 ### 本地 PostgreSQL 18
 
 需要由 Compose 一并运行 PostgreSQL 时，在 `.env` 中设置数据库密码：

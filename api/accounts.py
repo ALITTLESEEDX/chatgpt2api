@@ -1656,11 +1656,23 @@ def create_router() -> APIRouter:
                 account_service.add_account_items,
                 payloads,
                 return_items=False,
+                return_item_results=True,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
-        # 只做本地保存；账号与额度由 account-lifecycle-watcher 后续远程同步。
+        # 只刷新本次新增账号；重复推送的已有账号不重复请求上游。
+        added_tokens = [
+            _account_payload_token(payload)
+            for payload, item_result in zip(payloads, result.get("item_results") or [])
+            if item_result == "added"
+        ]
+        if added_tokens:
+            # shortcut: 一次性后台同步，进程重启会丢失这次刷新；需要保证执行时升级为持久化任务。
+            _schedule_account_operation(
+                run_in_threadpool(account_service.sync_accounts_and_quota, added_tokens)
+            )
+
         return {
             "requested": len(body.accounts),
             "added": max(0, int(result.get("added") or 0)),

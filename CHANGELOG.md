@@ -11,6 +11,7 @@
 + [优化] 求解服务自动对齐出口：主服务调用时带上该请求实际使用的代理和出口时区，求解服务按「代理 + 时区」各开一个页面（`SENTINEL_SOLVER_MAX_PAGES`，默认 8），改代理组不再需要同步 `.env` 或重启；`SENTINEL_SOLVER_PROXY` / `SENTINEL_SOLVER_TIMEZONE` 只作为默认值。
 + [优化] 求解服务镜像在构建阶段安装 Chromium 的系统依赖，入口脚本不再每次启动都 `apt` 安装；此前每次重建容器都有约一分钟求解服务不可用，期间所有生图请求连接被拒。
 + [优化] 主服务请求体里的时区（`timezone` / `timezone_offset_min`）不再写死 `Asia/Shanghai` / `-480`，改为按代理出口 IP 查询（失败回退 `Asia/Shanghai`，缓存 6 小时）。
++ [优化] 账号导入 API（`POST /api/accounts/import-api`）保存后后台自动同步一次本次新增账号的额度与账号信息；重复推送的已有账号不重复请求上游，推送响应仍只表示本地保存结果。
 + [修复] Sentinel PoW 按当前 sentinel SDK 重写：校验改为 FNV-1a-32（替换 SHA3-512），命中答案带 `~S` 后缀，失败答案带 `errorPrefix`，25 项指纹按 `getConfig()` 取值，时间串改为本地时区（此前固定 EST 时区 + `en-US`）。
 + [修复] 去掉会话默认的 `Cache-Control: no-cache` 与 `Pragma: no-cache`：实测带这两个头的请求会被 Cloudflare 挑战，`/backend-api/sentinel/chat-requirements/prepare` 等 POST 直接返回 403 挑战页且重试无效；去掉后同一出口返回 200。
 + [修复] 求解服务不再把令牌种子 `p` 当 Turnstile token 返回：只给 sentinel SDK 的密钥映射注入 `p`，不再劫持 turnstile 模块自己的 `tokenCache`（此前 token 与 `p` 逐字节相同，上游据此返回伪装的 404 `Model not found`）；求解结果等于 `p` 时主服务与求解服务都按失败处理。

@@ -139,6 +139,16 @@ HEADLESS = os.getenv("SENTINEL_SOLVER_HEADLESS", "true").strip().lower() not in 
 # gets room here.
 SDK_SOLVE_TIMEOUT_MS = 120000
 READY_TIMEOUT_SECONDS = 60
+# page.evaluate / page.title have no timeout of their own; without these bounds a hung
+# page blocks every caller of that egress forever and only a restart recovers it.
+# EVALUATE_TIMEOUT_SECONDS stays below the main service's 60s solver request timeout.
+EVALUATE_TIMEOUT_SECONDS = 30
+READY_PROBE_TIMEOUT_SECONDS = 5
+# Last resort for wedges the page-level timeouts cannot cure (stuck reopen, dead driver or
+# browser): after this many failed solves in a row the process exits and the container's
+# restart policy brings it back. Any success resets the count.
+SOLVE_DEADLINE_SECONDS = 55
+MAX_CONSECUTIVE_FAILURES = 3
 # One page per (proxy, timezone) egress; the least recently used one is closed past this.
 MAX_PAGES = max(1, int(os.getenv("SENTINEL_SOLVER_MAX_PAGES", "8")))
 
@@ -177,6 +187,9 @@ class SolverPage:
         self._page: Page | None = None
         self._opened_at = 0.0
         self._lock = asyncio.Lock()
+        # The SDK solve swaps the global WeakMap.prototype.get for the duration of the call;
+        # overlapping solves on one page would restore each other's patch.
+        self._sdk_lock = asyncio.Lock()
         self._assets: dict[str, str] = {}
         self.last_error = ""
 
@@ -199,8 +212,8 @@ class SolverPage:
             return self._page
 
     async def invalidate(self) -> None:
-        async with self._lock:
-            self._opened_at = 0.0
+        # No lock: page() may be holding it on a hung page, and this is the way out of that.
+        self._opened_at = 0.0
 
     async def _reopen(self) -> None:
         if self._context is not None:
@@ -250,13 +263,17 @@ class SolverPage:
     async def _is_ready(page: Page | None) -> bool:
         if page is None or page.is_closed():
             return False
-        try:
+
+        async def probe() -> bool:
             title = await page.title()
             if any(marker in title for marker in CHALLENGE_TITLES):
                 return False
             return await page.evaluate(
                 "location.hostname === 'chatgpt.com' && typeof window.__sentinelVM === 'object'"
             )
+
+        try:
+            return await asyncio.wait_for(probe(), READY_PROBE_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001
             return False
 
@@ -309,7 +326,8 @@ class SolverPage:
         if requirements:
             asset = await self.asset("turnstile")
             try:
-                result = str(await self.evaluate(_SOLVE_VIA_SDK, [requirements, p, asset]) or "")
+                async with self._sdk_lock:
+                    result = str(await self.evaluate(_SOLVE_VIA_SDK, [requirements, p, asset]) or "")
             except Exception as exc:  # noqa: BLE001
                 result = f"ERR:{exc}"
             # Echoing the seed back means the challenge never ran; treat it as a failure.
@@ -332,9 +350,9 @@ class SolverPage:
         for attempt in range(2):
             page = await self.page()
             try:
-                return await page.evaluate(expression, arg)
+                return await asyncio.wait_for(page.evaluate(expression, arg), EVALUATE_TIMEOUT_SECONDS)
             except Exception as exc:  # noqa: BLE001
-                self.last_error = str(exc)
+                self.last_error = str(exc) or type(exc).__name__
                 if attempt:
                     raise
                 await self.invalidate()
@@ -457,16 +475,14 @@ async def health() -> dict[str, object]:
     return solver.status()
 
 
-@app.post("/v1/turnstile")
-async def solve_turnstile(body: TurnstileRequest, authorization: str | None = Header(default=None)) -> dict[str, str]:
-    require_key(authorization)
-    try:
-        page = await solver.solver_page(body.proxy, body.timezone)
-        ok, token = await page.solve_turnstile(body.requirements, body.dx, body.p)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"turnstile solve failed: {exc}") from exc
+_consecutive_failures = 0
+
+
+async def _solve(body: TurnstileRequest) -> dict[str, str]:
+    page = await solver.solver_page(body.proxy, body.timezone)
+    ok, token = await page.solve_turnstile(body.requirements, body.dx, body.p)
     if not ok:
-        raise HTTPException(status_code=503, detail=f"turnstile solve failed: {token[:300]}")
+        raise RuntimeError(token[:300])
     so = ""
     if body.requirements:
         try:
@@ -474,6 +490,24 @@ async def solve_turnstile(body: TurnstileRequest, authorization: str | None = He
         except Exception as exc:  # noqa: BLE001
             print(f"[sentinel-solver] SO solve error: {exc}", flush=True)
     return {"token": token, "so": so}
+
+
+@app.post("/v1/turnstile")
+async def solve_turnstile(body: TurnstileRequest, authorization: str | None = Header(default=None)) -> dict[str, str]:
+    global _consecutive_failures
+    require_key(authorization)
+    try:
+        result = await asyncio.wait_for(_solve(body), SOLVE_DEADLINE_SECONDS)
+    except Exception as exc:  # noqa: BLE001
+        _consecutive_failures += 1
+        if _consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            print(f"[sentinel-solver] {_consecutive_failures} solves failed in a row, exiting to restart", flush=True)
+            asyncio.get_running_loop().call_later(1, os._exit, 1)
+        raise HTTPException(
+            status_code=503, detail=f"turnstile solve failed: {exc or type(exc).__name__}"
+        ) from exc
+    _consecutive_failures = 0
+    return result
 
 
 @app.post("/v1/so")

@@ -4154,10 +4154,28 @@ class AccountService:
             active_token = self.resolve_access_token(access_token) or access_token
         from services.openai_backend_api import InvalidAccessTokenError, OpenAIBackendAPI
 
-        def request_user_info(token: str) -> dict[str, Any]:
+        def fetch_user_info(token: str, proxy_profile: Any = None) -> dict[str, Any]:
             with account_processing_slot():
-                with OpenAIBackendAPI(token) as backend:
+                with OpenAIBackendAPI(token, proxy_profile=proxy_profile) as backend:
                     return backend.get_user_info()
+
+        def request_user_info(token: str) -> dict[str, Any]:
+            try:
+                return fetch_user_info(token)
+            except Exception as exc:
+                # 出图选号预检走主出口；出口整体不可用（如代理池全部熔断）时若不换备用出口，
+                # 所有账号都会被判不可用，直到代理自行恢复。
+                if not image_scope or classify_image_exception(exc).code not in {
+                    "upstream_connection_failed",
+                    "upstream_connection_timeout",
+                }:
+                    raise
+                from services.proxy_service import proxy_settings
+
+                fallback_profile = proxy_settings.get_fallback_profile(upstream=True)
+                if fallback_profile is None:
+                    raise
+                return fetch_user_info(token, fallback_profile)
 
         request_token, request_refresh_token, request_account = self._credential_snapshot(active_token)
         if not request_account:

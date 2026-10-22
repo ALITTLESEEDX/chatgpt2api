@@ -10,6 +10,7 @@
 + [优化] 求解页面的 User-Agent 用于生成 requirements / proof token，保持与算 Turnstile 的页面一致；finalize 之后清掉受限 `oai-sc` Cookie。
 + [优化] 求解服务自动对齐出口：主服务调用时带上该请求实际使用的代理和出口时区，求解服务按「代理 + 时区」各开一个页面（`SENTINEL_SOLVER_MAX_PAGES`，默认 8），改代理组不再需要同步 `.env` 或重启；`SENTINEL_SOLVER_PROXY` / `SENTINEL_SOLVER_TIMEZONE` 只作为默认值。
 + [修复] 求解服务页面卡住后不再需要重启才能恢复：`page.evaluate` 与就绪检查加超时（30 秒 / 5 秒），超时即作废并重开页面；`invalidate()` 不再依赖被卡住的页面锁；同一页面的 SDK 求解串行，避免并发改写 `WeakMap.prototype.get` 互相还原。`/v1/turnstile` 整体限 55 秒（低于主服务 60 秒超时）；连续 3 次求解失败则进程退出，由容器 `restart: unless-stopped` 拉起，覆盖重开页面卡死、浏览器或驱动失联等页面级超时无法恢复的情况。
++ [修复] 出口代理整体不可用（如代理池全部节点被熔断，`CONNECT` 返回 503）时，生图选号预检在主出口连接失败后改用已配置的备用出口重试一次，不再把所有账号判为不可用并报 `no image account available after 20 attempts`，也不必重启容器才能恢复；未配置备用出口时行为不变。
 + [优化] 求解服务镜像在构建阶段安装 Chromium 的系统依赖，入口脚本不再每次启动都 `apt` 安装；此前每次重建容器都有约一分钟求解服务不可用，期间所有生图请求连接被拒。
 + [优化] 主服务请求体里的时区（`timezone` / `timezone_offset_min`）不再写死 `Asia/Shanghai` / `-480`，改为按代理出口 IP 查询（失败回退 `Asia/Shanghai`，缓存 6 小时）。
 + [优化] 账号导入 API（`POST /api/accounts/import-api`）保存后后台自动同步一次本次新增账号的额度与账号信息；重复推送的已有账号不重复请求上游，推送响应仍只表示本地保存结果。

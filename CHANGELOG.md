@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] 账号导入 API（`POST /api/accounts/import-api`）支持 `update_existing`：外部系统刷新 AT 后可按邮箱原地更新已有账号的凭证，不再因新 AT 生成重复账号；响应新增 `updated` 计数，默认仍为只新增、重复跳过。
 + [新增] 新增 `deploy/update.sh`：在部署机上一条命令完成 git 同步（默认只允许快进，`--reset` 用于上游历史被重写）、构建本地主服务镜像并写回 `CHATGPT2API_IMAGE`、重建 `chatgpt2api-runtime` 运行时卷、`docker compose up -d --build`（含 `sentinel-solver`）；缺少 `SENTINEL_SOLVER_KEY` 时自动生成。
 + [新增] `v*` 标签发布会额外构建并推送求解服务镜像 `ghcr.io/<owner>/chatgpt2api-sentinel-solver`（构建上下文 `sentinel_solver/`，Chromium 在容器首次启动时下载，建议挂载 `/ms-playwright` 持久卷）；`docker-compose.yml` 的 `sentinel-solver` 默认拉取该镜像，可用 `SENTINEL_SOLVER_IMAGE` 覆盖，本地改了求解器代码时用 `up -d --build` 重新构建。
 + [新增] 新增常驻 Chromium 的 Sentinel 求解服务 `sentinel_solver/`（FastAPI + Playwright）与客户端 `services/sentinel_solver_client.py`，移植自 PR #418（`vm.js` 来源 MEIZU16/chatgpt2api，MIT）：优先调用 chatgpt.com 页面自带的 Turnstile 模块，回退内置 VM；`docker-compose.yml` / `docker-compose.local.yml` 接入 `sentinel-solver`，主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（`Authorization: Bearer`）。solver 只接收挑战参数，不接收账号 token、Cookie 或 prompt。未配置或求解失败时主服务直接报错，不再发送空 token。

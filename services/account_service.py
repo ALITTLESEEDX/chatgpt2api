@@ -2188,6 +2188,17 @@ class AccountService:
             quiet=quiet,
         )
 
+    def access_tokens_by_email(self) -> dict[str, str]:
+        """返回小写邮箱到当前 access_token 的映射，供导入 API 原地更新账号。"""
+        self._refresh_accounts_snapshot_if_stale()
+        with self._lock:
+            owners: dict[str, str] = {}
+            for token, account in self._accounts.items():
+                email = str(account.get("email") or "").strip().lower()
+                if email:
+                    owners[email] = str(account.get("access_token") or token).strip()
+            return owners
+
     def get_account(self, access_token: str) -> dict | None:
         if not access_token:
             return None

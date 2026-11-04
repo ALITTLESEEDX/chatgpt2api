@@ -122,6 +122,9 @@ class AccountImportApiRequest(BaseModel):
         max_length=ACCOUNT_IMPORT_API_MAX_ITEMS,
     )
     target_group_id: str | None = None
+    # 为 True 时按邮箱原地替换已有账号的凭证（外部查活刷新 AT 后回推），
+    # 默认 False 保持原有“只新增、重复跳过”的行为。
+    update_existing: bool = False
 
 
 class AccountOperationRequest(BaseModel):
@@ -261,6 +264,45 @@ def _account_import_api_payload(
     if target_group_id is not None:
         payload["group_id"] = target_group_id
     return payload
+
+
+async def _update_existing_import_accounts(
+    payloads: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, list[str]]:
+    """按邮箱把已有账号原地换成新凭证，返回未命中/失败的 payload、更新数和错误。"""
+    owners = await run_in_threadpool(account_service.access_tokens_by_email)
+    remaining: list[dict[str, Any]] = []
+    errors: list[str] = []
+    updated = 0
+    for payload in payloads:
+        access_token = _account_payload_token(payload)
+        resolved = await run_in_threadpool(account_service.resolve_access_token, access_token)
+        if resolved != access_token:
+            # 本地拿的是远端已轮换掉的旧 AT：保留远端当前凭证，交给新增流程按跳过处理。
+            remaining.append(payload)
+            continue
+        email = _clean_text(payload.get("email")).lower()
+        existing = owners.get(email, "") if email else ""
+        if not existing or existing == access_token:
+            remaining.append(payload)
+            continue
+        updates = {key: value for key, value in payload.items() if key != "access_token"}
+        try:
+            account = await run_in_threadpool(
+                account_service.update_account,
+                existing,
+                {**updates, "access_token": access_token},
+                quiet=True,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        if account is None:
+            # 读取邮箱索引后账号刚好被删除：回退为新增，避免这次推送丢失。
+            remaining.append(payload)
+            continue
+        updated += 1
+    return remaining, updated, errors
 
 
 def _unique_tokens(tokens: list[str]) -> list[str]:
@@ -1651,15 +1693,22 @@ def create_router() -> APIRouter:
         if not payloads:
             raise HTTPException(status_code=400, detail={"error": "accounts[].access_token is required"})
 
-        try:
-            result = await run_in_threadpool(
-                account_service.add_account_items,
-                payloads,
-                return_items=False,
-                return_item_results=True,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
+        updated = 0
+        if body.update_existing:
+            payloads, updated, update_errors = await _update_existing_import_accounts(payloads)
+            invalid += len(update_errors)
+
+        result: dict[str, Any] = {}
+        if payloads:
+            try:
+                result = await run_in_threadpool(
+                    account_service.add_account_items,
+                    payloads,
+                    return_items=False,
+                    return_item_results=True,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
 
         # 只刷新本次新增账号；重复推送的已有账号不重复请求上游。
         added_tokens = [
@@ -1676,8 +1725,9 @@ def create_router() -> APIRouter:
         return {
             "requested": len(body.accounts),
             "added": max(0, int(result.get("added") or 0)),
+            "updated": updated,
             "skipped": max(0, int(result.get("skipped") or 0)),
-            "invalid": max(0, invalid),
+            "invalid": max(0, int(invalid)),
         }
 
     @router.post("/api/accounts/import-cleanup")

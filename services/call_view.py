@@ -22,6 +22,7 @@ _IMAGE_FAILURE_LABELS = {
     "upstream_error": "上游请求失败",
     "internal_error": "内部处理异常",
     "upstream_unavailable": "上游服务暂不可用",
+    "upstream_cloudflare_challenge": "出口 IP 被 Cloudflare 拦截",
     "upstream_connection_failed": "无法连接上游",
     "upstream_connection_timeout": "上游连接超时",
     "upstream_rate_limited": "上游服务限流",

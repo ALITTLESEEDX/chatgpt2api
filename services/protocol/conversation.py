@@ -328,6 +328,10 @@ def _download_image_bytes_with_monitor(
 
 
 IMAGE_MODEL_NOT_FOUND_COOLDOWN_SECS = 10 * 60
+# Cloudflare 挑战页（HTML 403）是出口 IP 被临时拦截，与账号无关：同账号换新会话
+# 退避重试，不计入账号健康。
+IMAGE_CLOUDFLARE_MAX_RETRIES = 2
+IMAGE_CLOUDFLARE_RETRY_WAIT_SECS = 5.0
 
 
 def is_image_model_not_found_error(error: BaseException) -> bool:
@@ -2061,6 +2065,7 @@ def _generate_single_image(
     image_attempts: list[dict[str, Any]] = []
     retry_error: ImageGenerationError | None = None
     pending_switch_attempt_index: int | None = None
+    cf_challenge_retry_count = 0
     account_attempt_started = 0.0
     max_account_attempts = (
         config.image_max_account_attempts
@@ -2580,6 +2585,32 @@ def _generate_single_image(
                 if isinstance(exc, ImageEgressDeadlineError)
                 else classify_image_exception(exc)
             )
+            # Cloudflare 挑战页是出口 IP 被临时拦截，跟账号无关：不计入账号健康，
+            # 同账号换新会话退避后重试；仍失败时交给账号切换逻辑。
+            if failure.code == "upstream_cloudflare_challenge" and not emitted_for_token:
+                remaining_secs = (
+                    request.deadline_monotonic - time.monotonic()
+                    if request.deadline_monotonic > 0 else float("inf")
+                )
+                wait_secs = IMAGE_CLOUDFLARE_RETRY_WAIT_SECS * (cf_challenge_retry_count + 1)
+                if (
+                    cf_challenge_retry_count < IMAGE_CLOUDFLARE_MAX_RETRIES
+                    and remaining_secs > wait_secs
+                ):
+                    cf_challenge_retry_count += 1
+                    logger.warning({
+                        "event": "image_stream_cloudflare_retry",
+                        "call_id": request.call_id,
+                        "request_token": token,
+                        "account_email": account_email,
+                        "retry_count": cf_challenge_retry_count,
+                        "index": index,
+                        "wait_secs": wait_secs,
+                        "error": diagnostic_excerpt(str(exc), 300),
+                    })
+                    time.sleep(wait_secs)
+                    retry_token = token
+                    continue
             if is_image_model_not_found_error(exc):
                 # 仅本地暂避账号，不修改额度、有效性或代理健康状态。
                 account_service.sideline_image_account(token, IMAGE_MODEL_NOT_FOUND_COOLDOWN_SECS)

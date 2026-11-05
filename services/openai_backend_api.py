@@ -42,7 +42,14 @@ from services.image_failure import (
 from services.protocol.reasoning import normalize_thinking_effort
 from services.proxy_service import ProxyRuntimeProfile, proxy_settings
 from utils.file_names import sanitize_public_filename
-from utils.helper import UpstreamHTTPError, ensure_ok, iter_sse_payloads, new_uuid, split_image_model
+from utils.helper import (
+    WEB_IMAGE_MODEL_SLUGS,
+    UpstreamHTTPError,
+    ensure_ok,
+    iter_sse_payloads,
+    new_uuid,
+    split_image_model,
+)
 from utils.diagnostics import diagnostic_excerpt
 from utils.log import logger
 from utils.pow import build_legacy_requirements_token, build_proof_token, parse_pow_resources
@@ -63,8 +70,32 @@ class ChatRequirements:
 DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
 DEFAULT_POW_SCRIPT = "https://chatgpt.com/backend-api/sentinel/sdk.js"
+# Cloudflare 挑战页（cf-mitigated: challenge 或 HTML 403）的重试：挑战是按请求打分的，
+# 住宅 IP 也会间歇命中；第 n 次重试前等待 n 倍间隔，并清掉 Cloudflare Cookie 重新评估。
+_CLOUDFLARE_CHALLENGE_RETRIES = 3
+_CLOUDFLARE_CHALLENGE_WAIT_SECS = 1.5
+_CLOUDFLARE_COOKIE_PREFIXES = ("__cf", "_cf", "cf_")
+# 生成好的图片存放在对象存储上，偶发 503 ServerBusy 等临时错误：按 1 / 2 / 4 秒退避重试
+# （有 Retry-After 时按它等，最多 10 秒）。图片已经生成、额度已经扣掉，下载失败就白生成了。
+_IMAGE_DOWNLOAD_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_IMAGE_DOWNLOAD_ATTEMPTS = 4
+_IMAGE_DOWNLOAD_BACKOFF_SECS = 1.0
+_IMAGE_DOWNLOAD_MAX_WAIT_SECS = 10.0
 DEFAULT_IMPERSONATE = "chrome146"
 LEGACY_IMPERSONATES = {"chrome110", "edge101"}
+# 请求头里的浏览器身份必须与 TLS 指纹一致：curl_cffi 的 chrome146 发的是 Chrome 146 的 ClientHello，
+# 请求头却自称 Edge 148 时会被判为可疑。实测（2026-10-15，匿名对话、同一出口）：Edge 148 身份
+# 6/6 返回 403 Unusual activity，本身份 6/6 通过；Cloudflare 也会间歇直接回 403 挑战页。
+FINGERPRINT_FULL_VERSION = "146.0.7680.180"
+FINGERPRINT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+FINGERPRINT_SEC_CH_UA = '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"'
+FINGERPRINT_SEC_CH_UA_FULL_VERSION_LIST = (
+    f'"Chromium";v="{FINGERPRINT_FULL_VERSION}", "Not-A.Brand";v="24.0.0.0", '
+    f'"Google Chrome";v="{FINGERPRINT_FULL_VERSION}"'
+)
 CLIENT_CREATED_ROOT = "client-created-root"
 IMAGE_CREATION_MENTION = "@创建图像"
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
@@ -276,8 +307,8 @@ class OpenAIBackendAPI:
             "Sec-Ch-Ua": self.fp["sec-ch-ua"],
             "Sec-Ch-Ua-Arch": '"x86"',
             "Sec-Ch-Ua-Bitness": '"64"',
-            "Sec-Ch-Ua-Full-Version": '"148.0.0.0"',
-            "Sec-Ch-Ua-Full-Version-List": '"Microsoft Edge";v="148.0.0.0", "Chromium";v="148.0.0.0", "Not A(Brand";v="24.0.0.0"',
+            "Sec-Ch-Ua-Full-Version": f'"{FINGERPRINT_FULL_VERSION}"',
+            "Sec-Ch-Ua-Full-Version-List": FINGERPRINT_SEC_CH_UA_FULL_VERSION_LIST,
             "Sec-Ch-Ua-Mobile": self.fp["sec-ch-ua-mobile"],
             "Sec-Ch-Ua-Model": '""',
             "Sec-Ch-Ua-Platform": self.fp["sec-ch-ua-platform"],
@@ -328,17 +359,14 @@ class OpenAIBackendAPI:
             value = str(account.get(key) or "").strip()
             if value:
                 fp[key] = value
-        fp.setdefault(
-            "user-agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
-        )
+        # 旧 TLS 指纹（chrome110 / edge101）与当前 UA 对不上，统一换成默认指纹
         if fp.get("impersonate") in LEGACY_IMPERSONATES:
             fp.pop("impersonate")
+        fp.setdefault("user-agent", FINGERPRINT_UA)
         fp.setdefault("impersonate", DEFAULT_IMPERSONATE)
         fp.setdefault("oai-device-id", new_uuid())
         fp.setdefault("oai-session-id", new_uuid())
-        fp.setdefault("sec-ch-ua", '"Microsoft Edge";v="148", "Chromium";v="148", "Not A(Brand";v="24"')
+        fp.setdefault("sec-ch-ua", FINGERPRINT_SEC_CH_UA)
         fp.setdefault("sec-ch-ua-mobile", "?0")
         fp.setdefault("sec-ch-ua-platform", '"Windows"')
         return fp
@@ -878,12 +906,20 @@ class OpenAIBackendAPI:
         return payload
 
     def _image_model_slug(self, model: str) -> str:
-        """把标准图片模型名映射到底层 model slug。"""
+        """把标准图片模型名映射到底层 model slug。
+
+        `gpt-image-2` 与本地兼容别名 `gpt-image-2.5` 在上游模型目录里没有对应 slug，
+        统一发送官网同款的 `auto`；2.5 / 2.6 的 flare / sunburst 是上游真实 slug，
+        原样透传才能选中对应型号。
+        """
         _, base_model = split_image_model(model)
         if not base_model:
             return "auto"
-        # 网页生图使用 auto，由服务端选择当前可用模型。
-        return base_model if base_model == CODEX_IMAGE_MODEL else "auto"
+        if base_model == CODEX_IMAGE_MODEL:
+            return base_model
+        if base_model in WEB_IMAGE_MODEL_SLUGS:
+            return base_model
+        return "auto"
 
     def _image_headers(self, path: str, requirements: ChatRequirements, conduit_token: str = "", accept: str = "*/*") -> \
             Dict[str, str]:
@@ -3633,47 +3669,67 @@ class OpenAIBackendAPI:
                 if same_origin
                 else self._signed_asset_headers()
             )
-            for attempt in range(2):
+            credential_scope = "account" if same_origin else "signed_asset"
+            for attempt in range(1, _IMAGE_DOWNLOAD_ATTEMPTS + 1):
+                wait_secs = _IMAGE_DOWNLOAD_BACKOFF_SECS * 2 ** (attempt - 1)
+                last_exc: BaseException | None = None
+                failure: ImageFailure | None = None
+                reason = ""
+                retryable = False
                 try:
                     response = self.session.get(
                         url,
                         headers=download_headers,
                         timeout=120,
                     )
-                    ensure_ok(
-                        response,
-                        "image_download",
-                        credential_scope="account" if same_origin else "signed_asset",
-                    )
-                    content = bytes(response.content or b"")
-                    if not content:
-                        if attempt == 0:
-                            logger.warning({
-                                "event": "image_download_retry",
-                                "reason": "empty_response",
-                                "url_host": urlparse(url).netloc,
-                            })
-                            continue
-                        raise ImageDownloadError("image download returned an empty response")
-                    if content not in images:
-                        images.append(content)
-                    break
-                except ImageDownloadError:
-                    raise
                 except Exception as exc:
+                    last_exc = exc
                     failure = classify_image_exception(exc)
-                    if attempt == 0:
-                        logger.warning({
-                            "event": "image_download_retry",
-                            "reason": failure.code,
-                            "url_host": urlparse(url).netloc,
-                            "error": diagnostic_excerpt(repr(exc), 300),
-                        })
-                        continue
+                    retryable = failure.retryable
+                    reason = failure.code
+                else:
+                    status_code = int(getattr(response, "status_code", 0) or 0)
+                    if status_code >= 400:
+                        try:
+                            ensure_ok(
+                                response,
+                                "image_download",
+                                credential_scope=credential_scope,
+                            )
+                        except UpstreamHTTPError as exc:
+                            last_exc = exc
+                            failure = classify_image_exception(exc)
+                            # 分类按交付失败处理时仍按 HTTP 状态判断是否值得重试
+                            retryable = status_code in _IMAGE_DOWNLOAD_RETRY_STATUSES
+                            if retryable and exc.retry_after is not None:
+                                wait_secs = min(
+                                    float(exc.retry_after),
+                                    _IMAGE_DOWNLOAD_MAX_WAIT_SECS,
+                                )
+                            reason = f"HTTP {status_code}"
+                    else:
+                        content = bytes(response.content or b"")
+                        if content:
+                            if content not in images:
+                                images.append(content)
+                            break
+                        reason = "empty_response"
+                        retryable = True
+                if attempt >= _IMAGE_DOWNLOAD_ATTEMPTS or not retryable:
+                    if failure is None:
+                        raise ImageDownloadError("image download returned an empty response") from last_exc
                     raise ImageDownloadError(
-                        f"image download failed: {diagnostic_excerpt(exc, 500)}",
+                        f"image download failed: {diagnostic_excerpt(str(last_exc), 500)}",
                         failure=failure,
-                    ) from exc
+                    ) from last_exc
+                logger.warning({
+                    "event": "image_download_retry",
+                    "reason": reason,
+                    "url_host": parsed_url.netloc,
+                    "attempt": attempt,
+                    "wait_secs": wait_secs,
+                })
+                time.sleep(wait_secs)
         return images
 
     def stream_conversation(
@@ -3753,27 +3809,58 @@ class OpenAIBackendAPI:
 
     @staticmethod
     def _is_cloudflare_challenge(response: Any) -> bool:
-        """Cloudflare 挑战页：状态码 >= 400 且带 cf-mitigated: challenge。"""
-        if getattr(response, "status_code", 0) < 400:
+        """Cloudflare 挑战页：带 cf-mitigated: challenge，或是 HTML 形式的 403。
+
+        JSON 形式的 403（如 Unusual activity）是上游业务拒绝，不算挑战页。
+        """
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        if status_code < 400:
             return False
         headers = getattr(response, "headers", None)
-        value = str(headers.get("cf-mitigated") or "") if headers is not None else ""
-        return value.strip().lower() == "challenge"
+        if headers is None:
+            return False
+        if str(headers.get("cf-mitigated") or "").strip().lower() == "challenge":
+            return True
+        return status_code == 403 and "text/html" in str(headers.get("content-type") or "").lower()
+
+    def _drop_cloudflare_cookies(self) -> None:
+        """清掉会话里 Cloudflare 下发的 Cookie（__cf_bm / _cfuvid / cf_clearance 等）。
+
+        被挑战后这组 Cookie 会把当前会话标成可疑，带着它立即重试大多仍是挑战页；
+        清掉后上游按新访客重新评估。
+        """
+        try:
+            jar = self.session.cookies.jar
+            for cookie in list(jar):
+                if cookie.name.startswith(_CLOUDFLARE_COOKIE_PREFIXES):
+                    jar.clear(cookie.domain, cookie.path, cookie.name)
+        except Exception:
+            pass
 
     def _fetch(self, method: str, url: str, **kwargs: Any) -> Any:
-        """发请求；若被 Cloudflare 挑战则原样重试一次。
+        """发请求；被 Cloudflare 挑战时清掉 Cloudflare Cookie、逐次加长等待后重试。
 
-        挑战响应的 Set-Cookie 会带上 clearance，重试即可拿到真实内容；
         不重试的话后面 `/backend-api/f/conversation` 会返回 403 Unusual activity。
         """
         request = getattr(self.session, method)
         response = request(url, **kwargs)
-        if self._is_cloudflare_challenge(response):
+        for attempt in range(_CLOUDFLARE_CHALLENGE_RETRIES):
+            if not self._is_cloudflare_challenge(response):
+                break
             try:
                 response.close()
             except Exception:
                 pass
-            logger.info({"event": "cloudflare_challenge_retry", "method": method, "url": url})
+            wait_secs = _CLOUDFLARE_CHALLENGE_WAIT_SECS * (attempt + 1)
+            logger.warning({
+                "event": "cloudflare_challenge_retry",
+                "method": method,
+                "url": url,
+                "attempt": attempt + 1,
+                "wait_secs": wait_secs,
+            })
+            self._drop_cloudflare_cookies()
+            time.sleep(wait_secs)
             response = request(url, **kwargs)
         return response
 

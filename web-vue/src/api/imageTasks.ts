@@ -358,11 +358,24 @@ function createEditForm(input: CreateEditTaskInput) {
   return form
 }
 
+function imageMimeFromBase64(base64: string) {
+  try {
+    const head = atob(base64.slice(0, 24))
+    if (head.startsWith('\x89PNG')) return 'image/png'
+    if (head.startsWith('\xff\xd8\xff')) return 'image/jpeg'
+    if (head.startsWith('GIF8')) return 'image/gif'
+    if (head.startsWith('RIFF') && head.slice(8, 12) === 'WEBP') return 'image/webp'
+  } catch {
+    // 非法 base64 交给浏览器按默认 MIME 处理
+  }
+  return 'image/png'
+}
+
 export function imageAssetUrl(asset: ImageTaskAsset) {
   const url = cleanString(asset.url)
   if (url) return url
   const base64 = cleanString(asset.b64_json)
-  return base64 ? `data:image/png;base64,${base64}` : ''
+  return base64 ? `data:${imageMimeFromBase64(base64)};base64,${base64}` : ''
 }
 
 export const imageTasksApi = {

@@ -431,7 +431,14 @@ class ImageTaskService:
             reservation=reservation,
         )
 
-    def list_tasks(self, identity: dict[str, object], task_ids: list[str]) -> dict[str, Any]:
+    def list_tasks(
+            self,
+            identity: dict[str, object],
+            task_ids: list[str],
+            page: int = 1,
+            page_size: int = 50,
+    ) -> dict[str, Any]:
+        """带 ids 时按 id 精确查询（轮询用，不分页）；不带 ids 时返回最新一页。"""
         owner = _owner_id(identity)
         requested_ids = [_clean(task_id) for task_id in task_ids if _clean(task_id)]
         with self._lock:
@@ -453,6 +460,19 @@ class ImageTaskService:
                 ]
                 raw_items.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
                 missing_ids = []
+                page_size = max(1, min(int(page_size or 50), 200))
+                total = len(raw_items)
+                page_count = max(1, -(-total // page_size))
+                page = max(1, min(int(page or 1), page_count))
+                raw_items = raw_items[(page - 1) * page_size: page * page_size]
+                return image_task_page(
+                    raw_items,
+                    missing_ids=missing_ids,
+                    total=total,
+                    page=page,
+                    page_size=page_size,
+                    page_count=page_count,
+                )
             return image_task_page(raw_items, missing_ids=missing_ids)
 
     def _submit(

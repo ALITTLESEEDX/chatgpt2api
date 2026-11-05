@@ -2,11 +2,15 @@
 
 ## Unreleased
 
++ [新增] 网页图片模型新增 `gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`：`/v1/models`、控制台模型目录与图片接口统一接受这组名称，且 2.5 / 2.6 的 `-flare` / `-sunburst` 在网页图片请求中原样透传上游真实 slug，能真正选中型号（free 网页账号实测可出图）；`gpt-image-2` 与本地兼容别名 `gpt-image-2.5` 仍发 `auto`，不新增裸名 `gpt-image-2.6`。
++ [修复] 图片下载遇到对象存储 429 / 5xx / 连接中断时按 1 / 2 / 4 秒退避重试（最多 4 次，`Retry-After` 上限 10 秒）；404 等客户端错误不重试，避免图片已生成、额度已扣却整单失败。
++ [优化] 图片存储与响应按文件头识别真实格式（PNG / JPEG / WebP / GIF），不再一律命名为 `.png` 并以 `image/png` 返回；WebDAV / S3 上传与聊天 markdown 的 data URI 使用识别出的 MIME。
++ [优化] `GET /api/image-tasks` 不带 `ids` 时返回服务端分页（`page` / `page_size`，默认 50、上限 200）与 `total` / `page_count`；按 `ids` 的轮询查询不变。
 + [新增] 账号导入 API（`POST /api/accounts/import-api`）支持 `update_existing`：外部系统刷新 AT 后可按邮箱原地更新已有账号的凭证，不再因新 AT 生成重复账号；响应新增 `updated` 计数，默认仍为只新增、重复跳过。
 + [新增] 新增 `deploy/update.sh`：在部署机上一条命令完成 git 同步（默认只允许快进，`--reset` 用于上游历史被重写）、构建本地主服务镜像并写回 `CHATGPT2API_IMAGE`、重建 `chatgpt2api-runtime` 运行时卷、`docker compose up -d --build`（含 `sentinel-solver`）；缺少 `SENTINEL_SOLVER_KEY` 时自动生成。
 + [新增] `v*` 标签发布会额外构建并推送求解服务镜像 `ghcr.io/<owner>/chatgpt2api-sentinel-solver`（构建上下文 `sentinel_solver/`，Chromium 在容器首次启动时下载，建议挂载 `/ms-playwright` 持久卷）；`docker-compose.yml` 的 `sentinel-solver` 默认拉取该镜像，可用 `SENTINEL_SOLVER_IMAGE` 覆盖，本地改了求解器代码时用 `up -d --build` 重新构建。
 + [新增] 新增常驻 Chromium 的 Sentinel 求解服务 `sentinel_solver/`（FastAPI + Playwright）与客户端 `services/sentinel_solver_client.py`，移植自 PR #418（`vm.js` 来源 MEIZU16/chatgpt2api，MIT）：优先调用 chatgpt.com 页面自带的 Turnstile 模块，回退内置 VM；`docker-compose.yml` / `docker-compose.local.yml` 接入 `sentinel-solver`，主服务与 solver 共用 `SENTINEL_SOLVER_KEY`（`Authorization: Bearer`）。solver 只接收挑战参数，不接收账号 token、Cookie 或 prompt。未配置或求解失败时主服务直接报错，不再发送空 token。
-+ [优化] 默认客户端指纹升级为 Chrome 146 / Edge 148（curl_cffi `chrome146`、User-Agent、`Sec-Ch-Ua-Full-Version(-List)`），此前为 `chrome110` + Edge 143。
++ [优化] 默认客户端身份统一为 Chrome 146（curl_cffi `chrome146`、User-Agent、`Sec-Ch-Ua-Full-Version(-List)`），此前为 `chrome110` + Edge 143；请求头自称 Edge 148 但 TLS 指纹是 Chrome 146 会被上游判为可疑。
 + [优化] 网页生图请求体对齐 2026-10 网页端：`model=auto`、`@创建图像` 提及、`client-created-root`、prepare 与对话共用 `X-Oai-Turn-Trace-Id`，图片请求头补齐 Turnstile / SO token。
 + [优化] 求解页面的 User-Agent 用于生成 requirements / proof token，保持与算 Turnstile 的页面一致；finalize 之后清掉受限 `oai-sc` Cookie。
 + [优化] 求解服务自动对齐出口：主服务调用时带上该请求实际使用的代理和出口时区，求解服务按「代理 + 时区」各开一个页面（`SENTINEL_SOLVER_MAX_PAGES`，默认 8），改代理组不再需要同步 `.env` 或重启；`SENTINEL_SOLVER_PROXY` / `SENTINEL_SOLVER_TIMEZONE` 只作为默认值。
@@ -23,7 +27,7 @@
 + [修复] 求解服务的 `SENTINEL_SOLVER_PROXY` 支持 `http://user:pass@host:port`：账号密码拆给 Playwright 单独传递，此前带认证的代理 URL 浏览器无法使用，求解页面只能直连，与主服务出口不一致。
 + [修复] 账号刷新（`/backend-api/me`、`/backend-api/conversation/init`、`/backend-api/accounts/check`）仅对 Cloudflare 挑战页 403 最多尝试三次（间隔 1.5 秒、3 秒），JSON 403 授权拒绝不重试。
 + [修复] 图片对话返回精确的 `404 {"detail":"Model not found"}` 时，账号在当前进程内暂避 10 分钟，不修改额度、账号状态或代理健康。
-+ [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge`）时原样重试一次。
++ [修复] `bootstrap`、`chat-requirements` `prepare` / `finalize`、图片 `f/conversation/prepare`、图片 `f/conversation`、参考图上传遇到 Cloudflare 挑战（`cf-mitigated: challenge` 或 HTML 403）时清掉 `__cf_bm` / `_cfuvid` 等 Cookie，并按 1.5 / 3 / 4.5 秒退避重试（最多 3 次）；生图遇到挑战页最多换新会话再重试 2 次（5 / 10 秒），失败码 `upstream_cloudflare_challenge` 不计入账号健康。
 + [修复] `chat-requirements/finalize` 请求体改用服务端字段名 `proofofwork` / `turnstile`，此前发送 `proof_token` / `turnstile_token`。
 + [修复] `ensure_ok` 在 `stream=True` 响应上先读出 body 再解析，调用日志不再出现空的 `body=`，`f/conversation` 的真实 404 body（`{"detail":"Model not found"}`）可见。
 

@@ -196,11 +196,21 @@ def image_task_page(
     *,
     missing_ids: Iterable[object] = (),
     now_ts: float | None = None,
+    total: int | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    page_count: int | None = None,
 ) -> dict[str, Any]:
     projection_ts = time.time() if now_ts is None else now_ts
+    page_payload = (
+        {"total": total, "page": page, "page_size": page_size, "page_count": page_count}
+        if total is not None
+        else {}
+    )
     return {
         "items": [image_task_row(item, now_ts=projection_ts) for item in raw_items],
         "missing_ids": list(dict.fromkeys(
             task_id for value in missing_ids if (task_id := _text(value))
         )),
+        **page_payload,
     }

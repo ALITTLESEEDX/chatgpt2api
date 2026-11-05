@@ -64,3 +64,8 @@ class ImageTaskPage(BaseModel):
 
     items: list[ImageTaskRow]
     missing_ids: list[str] = Field(default_factory=list)
+    # 不带 ids 的列表查询会返回分页信息；按 id 精确查询（轮询）不带这些字段。
+    total: int | None = Field(default=None, ge=0)
+    page: int | None = Field(default=None, ge=1)
+    page_size: int | None = Field(default=None, ge=1)
+    page_count: int | None = Field(default=None, ge=1)

@@ -24,6 +24,7 @@ HTTP 400 的图片结果被分类为文本结果：`content_policy_violation`、
 | `image_stream_timeout` / `image_stream_interrupted` | SSE 超时或中断 | 502 |
 | `image_tool_error` | 上游图片工具终态异常 | 502 |
 | `image_download_failed` | 已生成但交付下载失败 | 502 |
+| `upstream_cloudflare_challenge` | 出口 IP 被 Cloudflare 挑战页拦截（HTML 403），与账号无关 | 502 |
 | `no_available_account` | 当前账号池无法选择账号 | 503 |
 
 ## 诊断字段
@@ -41,3 +42,5 @@ HTTP 400 的图片结果被分类为文本结果：`content_policy_violation`、
 `ImageTaskService` 持久化的任务状态是 `queued`、`running`、`success` 或 `error`。`/api/image-tasks` 的视图投影会根据原始状态、请求数量、成功数量和失败分类对外呈现 `success`、`partial_success`、`failed` 或 `text_review`。`partial_success` 用于多张请求中已有结果但未全部完成；`text_review` 是文本结果，不是前端把 400 临时改名后的失败。
 
 更改图片失败策略时，先调整 `ImageFailure` 的策略和契约测试，再检查 API、账号切换、持久化诊断、日志、监控和 Studio 投影是否一致。
+
+`upstream_cloudflare_challenge` 的 `verify_account=False`：挑战页按出口 IP 打分，执行层先用同一账号换新会话退避重试，再进入账号切换，不会把账号记为失败。图片下载遇到 429 / 5xx / 连接中断按 1 / 2 / 4 秒退避重试并遵循 `Retry-After`，客户端错误（如 404）不重试。

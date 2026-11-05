@@ -21,10 +21,11 @@ from services.json_file import read_json_object, write_json_file
 from services.r2_client import CloudflareR2Client, R2Error
 from services.storage.file_lock import interprocess_lock
 from utils.timezone import beijing_datetime_from_timestamp, beijing_now, beijing_now_str
+from utils.image_format import IMAGE_MIME_BY_EXTENSION, detect_image_extension, image_mime_for_path
 
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+IMAGE_EXTENSIONS = set(IMAGE_MIME_BY_EXTENSION)
 IMAGE_SYNC_MERGE_BATCH_SIZE = 64
 IMAGE_MUTATION_BATCH_SIZE = 16
 
@@ -501,7 +502,7 @@ class ImageStorageService:
 
     def make_relative_path(self, image_data: bytes) -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
-        filename = f"{int(time.time())}_{file_hash}.png"
+        filename = f"{int(time.time())}_{file_hash}{detect_image_extension(image_data)}"
         now = beijing_now()
         relative_dir = Path(now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
         return f"{relative_dir.as_posix()}/{filename}"
@@ -537,7 +538,7 @@ class ImageStorageService:
             if mode in {"webdav", "both"}:
                 client = WebDAVClient(self.settings())
                 try:
-                    remote_url = client.put(rel, image_data)
+                    remote_url = client.put(rel, image_data, content_type=image_mime_for_path(rel))
                     stored_webdav = True
                 finally:
                     client.session.close()
@@ -545,7 +546,7 @@ class ImageStorageService:
             if mode in {"s3", "local_s3"}:
                 client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
                 try:
-                    uploaded = client.upload_bytes(rel, image_data, content_type="image/png")
+                    uploaded = client.upload_bytes(rel, image_data, content_type=image_mime_for_path(rel))
                     s3_key = str(uploaded.get("key") or "")
                     stored_s3 = True
                 finally:
@@ -1251,7 +1252,7 @@ class ImageStorageService:
                 with self._index_guard():
                     current = self._load_clean_index().get(rel, {})
                 update = self._sync_item(path, rel, current, payload, "")
-                remote_url, s3_key = client.put(rel, payload)
+                remote_url, s3_key = client.put(rel, payload, content_type=image_mime_for_path(rel))
                 update["remote_url"] = remote_url
                 if s3_key:
                     update["s3_key"] = s3_key
@@ -1503,7 +1504,7 @@ class ImageStorageService:
                 try:
                     payload = path.read_bytes()
                     update = self._sync_item(path, rel, item, payload, "")
-                    remote_url, s3_key = client.put(rel, payload)
+                    remote_url, s3_key = client.put(rel, payload, content_type=image_mime_for_path(rel))
                     update["remote_url"] = remote_url
                     if s3_key:
                         update["s3_key"] = s3_key

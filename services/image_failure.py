@@ -79,6 +79,11 @@ FAILURE_POLICIES: dict[str, FailurePolicy] = {
         "transient", None, True, 502, "server_error",
         verify_account=True,
     ),
+    # Cloudflare 挑战页（HTML 形式的 403）：出口 IP 被临时拦截，与账号无关，
+    # 不计入账号健康（verify_account=False），避免把健康账号熔断。
+    "upstream_cloudflare_challenge": FailurePolicy(
+        "transient", None, True, 502, "server_error",
+    ),
     "upstream_connection_failed": FailurePolicy(
         "transient", None, True, 502, "server_error",
         verify_account=True,
@@ -262,6 +267,20 @@ _TOOL_ERROR_PUBLIC_CODES = frozenset({
     "image_stream_timeout",
 })
 
+IMAGE_CLOUDFLARE_PUBLIC_MESSAGE = (
+    "upstream Cloudflare challenge (HTTP 403) on the egress IP, please retry later"
+)
+
+
+def is_cloudflare_challenge_body(value: Any) -> bool:
+    """Cloudflare 挑战页（HTML 形式的 403）：出口 IP 被临时拦截，与账号无关。"""
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", "ignore")
+    if not isinstance(value, str):
+        return False
+    return "<html" in value.lower()
+
+
 def _is_structured_text_payload(text: str) -> bool:
     candidate = text.strip()
     if candidate.startswith("```") and candidate.endswith("```"):
@@ -334,6 +353,8 @@ def public_image_error_message(
         return IMAGE_TIMEOUT_PUBLIC_MESSAGE
     if failure.code in {"image_stream_interrupted", "image_stream_timeout"}:
         return IMAGE_TOOL_ERROR_PUBLIC_MESSAGE
+    if failure.code == "upstream_cloudflare_challenge":
+        return IMAGE_CLOUDFLARE_PUBLIC_MESSAGE
 
     upstream_text = _public_upstream_text(failure, error)
     if upstream_text:
@@ -488,6 +509,7 @@ def _failure_priority(code: str) -> int:
         "task_interrupted",
         "upstream_connection_failed",
         "upstream_connection_timeout",
+        "upstream_cloudflare_challenge",
         "upstream_unavailable",
     }:
         return 1
@@ -559,6 +581,20 @@ def classify_upstream_http_error(exc: UpstreamHTTPError) -> ImageFailure:
                 scope="delivery" if credential_scope == "signed_asset" else failure.scope,
             )
         return failure
+
+    if (
+        status_code == 403
+        and credential_scope == "account"
+        and is_cloudflare_challenge_body(exc.body)
+    ):
+        return replace(
+            image_failure(
+                "upstream_cloudflare_challenge",
+                retry_after=retry_after,
+                raw_detail=exc.body,
+            ),
+            status_code=status_code,
+        )
 
     if credential_scope != "account":
         if credential_scope == "signed_asset" and "download" in context:

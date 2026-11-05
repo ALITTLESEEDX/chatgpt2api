@@ -16,14 +16,25 @@ from curl_cffi.requests.exceptions import RequestException
 from curl_cffi.requests.models import STREAM_END
 from fastapi import HTTPException
 from services.proxy_service import proxy_settings
+from utils.image_format import detect_base64_image_mime
 from utils.log import logger
 
 WEB_IMAGE_MODELS = (
     "gpt-image-2",
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
     "gpt-image-2.5",
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
 )
+# 上游模型目录中存在同名 slug、需要原样透传的 Web 图片模型。
+# 其余 Web 名称（`gpt-image-2`、本地兼容别名 `gpt-image-2.5`）没有独立 slug，统一发送 `auto`。
+WEB_IMAGE_MODEL_SLUGS = frozenset({
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.6-flare",
+    "gpt-image-2.6-sunburst",
+})
 BASE_IMAGE_MODELS = {*WEB_IMAGE_MODELS, "codex-gpt-image-2"}
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 CODEX_IMAGE_MODEL = "codex-gpt-image-2"
@@ -691,5 +702,6 @@ def build_chat_image_markdown_content(image_result: dict[str, object]) -> str:
             continue
         b64_json = str(item.get("b64_json") or "").strip()
         if b64_json:
-            markdown_images.append(f"![image_{index}](data:image/png;base64,{b64_json})")
+            mime = detect_base64_image_mime(b64_json)
+            markdown_images.append(f"![image_{index}](data:{mime};base64,{b64_json})")
     return "\n\n".join(markdown_images) if markdown_images else "Image generation completed."

@@ -44,6 +44,7 @@ def public_editable_file_error_message(failure: ImageFailure) -> str:
         "insufficient_quota",
         "upstream_rate_limited",
         "upstream_unavailable",
+        "upstream_cloudflare_challenge",
     }:
         return EDITABLE_FILE_UNAVAILABLE_PUBLIC_MESSAGE
     if failure.code == "image_download_failed":

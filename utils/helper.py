@@ -329,6 +329,30 @@ def _format_timeout_secs(value: float) -> str:
     return f"{value:.3f}s"
 
 
+def close_stream_response(response: Any) -> None:
+    """Close a streaming response without waiting for upstream to stop sending.
+
+    curl_cffi's Response.close() sets quit_now and then blocks on
+    stream_task.result(); the curl worker only sees quit_now when the next chunk
+    arrives, so a silent upstream holds the caller for its whole idle tail.
+    Closing the curl handle while perform() still runs is unsafe, so the handle
+    is closed by the worker once perform() returns.
+    """
+    stream_task = getattr(response, "stream_task", None)
+    if stream_task is None:
+        response.close()
+        return
+    if getattr(response, "_stream_closed", False):
+        return
+    response._stream_closed = True  # later response.close() becomes a no-op
+    quit_now = getattr(response, "quit_now", None)
+    if quit_now is not None:
+        quit_now.set()
+    curl = getattr(response, "curl", None)
+    if curl is not None:
+        stream_task.add_done_callback(lambda _task: curl.close())
+
+
 def iter_sse_payloads(
     response: requests.Response,
     max_duration_secs: float | None = None,
@@ -336,7 +360,6 @@ def iter_sse_payloads(
     started_at = time.monotonic()
     timeout_secs = float(max_duration_secs or 0)
     pending: bytes | None = None
-    aborted = False
 
     def _timeout_error() -> TimeoutError:
         return TimeoutError(f"SSE stream exceeded {_format_timeout_secs(timeout_secs)}")
@@ -346,36 +369,17 @@ def iter_sse_payloads(
             return None
         return timeout_secs - (time.monotonic() - started_at)
 
+    def _close_quietly() -> None:
+        try:
+            close_stream_response(response)
+        except Exception:
+            pass
+
     def _raise_if_timeout() -> None:
         remaining = _remaining_secs()
         if remaining is not None and remaining <= 0:
-            _abort_stream_nonblocking()
+            _close_quietly()
             raise _timeout_error()
-
-    def _abort_stream_nonblocking() -> None:
-        """Cancel curl_cffi streaming without waiting for its stream task.
-
-        curl_cffi's Response.iter_content() blocks on an internal queue.get()
-        without a timeout. Calling response.close() from a watchdog can block on
-        stream_task.result(), so enforce our own deadline and only signal/close
-        the underlying curl handle here.
-        """
-        nonlocal aborted
-        aborted = True
-        try:
-            if getattr(response, "quit_now", None):
-                response.quit_now.set()
-        except Exception:
-            pass
-        try:
-            if getattr(response, "curl", None):
-                response.curl.close()
-        except Exception:
-            pass
-        try:
-            response._stream_closed = True
-        except Exception:
-            pass
 
     def _iter_chunks() -> Iterator[bytes]:
         stream_queue = getattr(response, "queue", None)
@@ -461,15 +465,11 @@ def iter_sse_payloads(
                     yield payload
     except Exception as exc:
         if timeout_secs > 0 and _remaining_secs() is not None and _remaining_secs() <= 0 and not isinstance(exc, TimeoutError):
-            _abort_stream_nonblocking()
+            _close_quietly()
             raise _timeout_error() from exc
         raise
     finally:
-        if not aborted:
-            try:
-                response.close()
-            except Exception:
-                pass
+        _close_quietly()
 
 
 def save_images_from_text(text: str, prefix: str) -> list[Path]:

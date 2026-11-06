@@ -46,6 +46,7 @@ from utils.helper import (
     WEB_IMAGE_MODEL_SLUGS,
     UpstreamHTTPError,
     ensure_ok,
+    close_stream_response,
     iter_sse_payloads,
     new_uuid,
     split_image_model,
@@ -2955,7 +2956,7 @@ class OpenAIBackendAPI:
                 continue
             records.append(
                 {"message_id": message_id, "create_time": message.get("create_time") or 0, "file_ids": file_ids,
-                 "sediment_ids": sediment_ids})
+                 "sediment_ids": sediment_ids, "status": str(message.get("status") or "").strip().lower()})
         return sorted(records, key=lambda item: item["create_time"])
 
     def _conversation_poll_snapshot(self, data: Dict[str, Any]) -> tuple[Dict[str, Any], str]:
@@ -3251,7 +3252,15 @@ class OpenAIBackendAPI:
             conversation_transport_error = None
             last_conversation_snapshot, last_assistant_text = self._conversation_poll_snapshot(conversation)
 
+            final_ids: set[str] = set()
+            record_statuses: list[str] = []
             for record in self._extract_image_tool_records(conversation):
+                if record["file_ids"] or record["sediment_ids"]:
+                    record_statuses.append(record["status"])
+                    # Only a message upstream marked finished_successfully is final; anything else keeps the settle check.
+                    if record["status"] == "finished_successfully":
+                        final_ids.update(record["file_ids"])
+                        final_ids.update(record["sediment_ids"])
                 for file_id in record["file_ids"]:
                     if file_id not in file_ids:
                         file_ids.append(file_id)
@@ -3296,6 +3305,10 @@ class OpenAIBackendAPI:
             logger.debug({"event": "image_poll_check", "conversation_id": conversation_id, "attempt": attempt,
                           "file_ids": file_ids, "sediment_ids": sediment_ids})
             if file_ids or sediment_ids:
+                if set(file_ids) | set(sediment_ids) <= final_ids:
+                    logger.info({"event": "image_poll_hit_final", "conversation_id": conversation_id,
+                                 "file_ids": file_ids, "sediment_ids": sediment_ids})
+                    return file_ids, sediment_ids
                 if not config.image_check_before_hit_enabled:
                     # 先check再hit 机制关闭：直接返回首次发现的 file_ids
                     logger.info({"event": "image_poll_hit_no_settle", "conversation_id": conversation_id,
@@ -3314,6 +3327,7 @@ class OpenAIBackendAPI:
                     return file_ids, sediment_ids
                 logger.info({"event": "image_poll_hit_pending_settle", "conversation_id": conversation_id,
                              "file_ids": file_ids, "sediment_ids": sediment_ids,
+                             "record_statuses": record_statuses,
                              "settle_secs": config.image_settle_secs})
                 wait = min(config.image_settle_secs, max(0.0, _remaining()))
                 if wait > 0:
@@ -3813,7 +3827,7 @@ class OpenAIBackendAPI:
                     })
                     break
         finally:
-            response.close()
+            close_stream_response(response)
 
     @staticmethod
     def _is_cloudflare_challenge(response: Any) -> bool:

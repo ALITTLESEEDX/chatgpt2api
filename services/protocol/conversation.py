@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from PIL import Image, ImageOps
 
 from services.account_service import ImageAccountSelectionError, account_service
+from services.bounded_task_runner import BoundedTaskRunner
 from services.config import config
 from services.image_failure import (
     ImageDownloadError,
@@ -1706,9 +1707,22 @@ def _recover_after_image_stream_timeout(
     )
 
 
-def _cleanup_image_conversations_after_success(backend: OpenAIBackendAPI, outputs: Iterable[ImageOutput]) -> None:
+_image_cleanup_runner = BoundedTaskRunner(
+    name="image-conversation-cleanup",
+    max_workers=4,
+    queue_size=128,
+)
+
+
+def _cleanup_image_conversations_after_success(backend: OpenAIBackendAPI, outputs: Iterable[ImageOutput]) -> bool:
+    """Hide successful conversations off the request path.
+
+    Returns True when the background task took ownership of ``backend`` and
+    will close it; the caller must then not close it. When the runner is full,
+    cleanup runs inline as before and the caller keeps ownership.
+    """
     if not config.image_remove_conversation_after_result:
-        return
+        return False
     conversation_ids: list[str] = []
     seen: set[str] = set()
     for output in outputs:
@@ -1717,6 +1731,28 @@ def _cleanup_image_conversations_after_success(backend: OpenAIBackendAPI, output
             continue
         seen.add(conversation_id)
         conversation_ids.append(conversation_id)
+    if not conversation_ids:
+        return False
+    reservation = _image_cleanup_runner.reserve()
+    if reservation is not None and reservation.commit(
+        _hide_image_conversations_and_close,
+        backend,
+        conversation_ids,
+        on_cancel=lambda _exc: backend.close(),
+    ):
+        return True
+    _hide_image_conversations(backend, conversation_ids)
+    return False
+
+
+def _hide_image_conversations_and_close(backend: OpenAIBackendAPI, conversation_ids: list[str]) -> None:
+    try:
+        _hide_image_conversations(backend, conversation_ids)
+    finally:
+        backend.close()
+
+
+def _hide_image_conversations(backend: OpenAIBackendAPI, conversation_ids: list[str]) -> None:
     for conversation_id in conversation_ids:
         try:
             backend.delete_conversation(conversation_id)
@@ -2486,6 +2522,7 @@ def _generate_single_image(
             "index": index,
         })
         backend: OpenAIBackendAPI | None = None
+        backend_handed_off = False
         egress_acquired = False
         try:
             egress_started = time.perf_counter()
@@ -2676,7 +2713,7 @@ def _generate_single_image(
                     conversation_id=attempt_conversation_id,
                     image_attempts=image_attempts,
                 )
-            _cleanup_image_conversations_after_success(backend, outputs)
+            backend_handed_off = _cleanup_image_conversations_after_success(backend, outputs)
             finalize_image_slot(True)
             attach_attempts_to_outputs(outputs)
             if request.trace_image_perf:
@@ -2864,7 +2901,7 @@ def _generate_single_image(
         finally:
             if egress_acquired and backend is not None:
                 proxy_settings.release_image_egress(backend.proxy_profile)
-            if backend is not None:
+            if backend is not None and not backend_handed_off:
                 backend.close()
 
 

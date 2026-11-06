@@ -79,6 +79,8 @@ Ordered by priority. Status is tracked per item.
 | P0-2 | Run the hide-conversation PATCH in a bounded background runner that owns the backend lifetime | ~5.6 s per success | deployed, pending 24 h verification |
 | P0-3 | Poll cadence: return as soon as every found file id sits in a `finished_successfully` message (code); production settings `image_poll_initial_wait_secs` 3, `image_poll_interval_secs` 2, `image_settle_secs` 2 | ~6–8 s | deployed, pending 24 h verification |
 | P1-4 | Skip the remote account preflight when the local account check is fresh | ~1.5 s | deferred: can turn a 1.6 s saving into a failed attempt + switch when an account just ran out of image quota; needs data on how often the preflight rejects accounts |
+| P1-6 | Studio polls image tasks every 1.5 s instead of 4 s (`studioImageTaskRuntime.ts`); file tasks keep 4 s | ~1.3 s average visible delay | implemented, not deployed |
+| P1-7 | Overlap the account preflight with bootstrap/requirements | ~1.3 s | deferred: needs egress reservation and bootstrap before the account is confirmed, a gate before the generation POST, and a new candidate-rejected path in the attempt loop that owns slots, quota classification, token rotation, and deadlines |
 | P1-5 | Upload multiple reference images concurrently on the shared session (curl_cffi keeps a curl handle per thread and a locked cookie jar); single image unchanged | multi-image edits: 2 images ~2 s, 5 images ~5 s (p90 ~9 s) | implemented, not deployed |
 
 P0-1 and P0-3 interact: once the stream closes ~10 s earlier, polling starts

@@ -145,6 +145,8 @@ export function useStudioImageTaskRuntime(input: StudioImageTaskRuntimeInput) {
     pendingTaskIds: pendingImageTaskIds,
     requestKey: IMAGE_TASKS_REQUEST_KEY,
     pollTimerKey: IMAGE_POLL_TIMER_KEY,
+    // Image tasks finish in ~20 s; a 4 s tick added up to 4 s of visible delay after the backend was done.
+    pollIntervalMs: 1500,
     refreshTimerKey: IMAGE_REFRESH_TIMER_KEY,
     loadTasks: imageTasksApi.list,
     applyResponse: (response) => {

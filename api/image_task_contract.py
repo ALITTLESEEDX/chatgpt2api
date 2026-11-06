@@ -33,6 +33,15 @@ class ImageTaskActions(BaseModel):
     resume_poll: bool
 
 
+class ImageTaskPartialFailure(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slot: int | None = None
+    code: str = ""
+    message: str = ""
+    status_code: int | None = None
+
+
 class ImageTaskRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +64,7 @@ class ImageTaskRow(BaseModel):
     elapsed_ms: int | None = Field(default=None, ge=0)
     error_code: str
     public_error: str
+    partial_failures: list[ImageTaskPartialFailure] = Field(default_factory=list)
     results: list[ImageTaskAsset] = Field(default_factory=list)
     actions: ImageTaskActions
 

@@ -4,6 +4,7 @@
 
 + [新增] 图片存储设置新增「保留期到期后同时删除 R2 上的图片」开关（`image_storage.s3_delete_expired`，默认关，仅 R2 / 本地 + R2 模式生效）：开启后自动清理对到期图片改为本地、R2、索引一并删除（含仅在 R2 的图片）；打开开关时先统计现有过期图片，有 R2 副本则需确认，确认后保存即立即清理。新增 `POST /api/settings/image-remote-cleanup/preview`；磁盘空间不足触发的清理仍只删本地副本。
 + [新增] 网页图片模型新增 `gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`：`/v1/models`、控制台模型目录与图片接口统一接受这组名称，且 2.5 / 2.6 的 `-flare` / `-sunburst` 在网页图片请求中原样透传上游真实 slug，能真正选中型号（free 网页账号实测可出图）；`gpt-image-2` 与本地兼容别名 `gpt-image-2.5` / `gpt-image-2.6` 仍发 `auto`。
++ [修复] 控制台创建图片任务（`POST /api/image-tasks/generations`、`/edits`）不再返回 500：任务视图已输出 `partial_failures`，但响应契约 `ImageTaskRow` 未声明该字段，导致任务在后台照常执行而页面报错；契约补齐该字段。
 + [修复] 图片下载遇到对象存储 429 / 5xx / 连接中断时按 1 / 2 / 4 秒退避重试（最多 4 次，`Retry-After` 上限 10 秒）；404 等客户端错误不重试，避免图片已生成、额度已扣却整单失败。
 + [优化] 生图提速：上游 SSE 发出终态事件后立即断开读取，不再等上游空闲约 10 秒才关连接（curl 句柄改由读取线程收尾时释放，也修复超时中止时在读取线程运行中关闭句柄的隐患）；生成成功后隐藏会话的请求改为后台执行（`image_remove_conversation_after_result` 开启时），不再阻塞约 5 秒返回结果，后台队列满时退回同步执行。
 + [优化] 生图结果轮询：会话里图片消息已标记 `finished_successfully` 时直接取结果，不再固定多等一轮 settle（约 5 秒）再确认；未完成或 `finished_partial_completion` 时仍走原二次确认。`image_poll_hit_pending_settle` 日志新增 `record_statuses` 便于排查。

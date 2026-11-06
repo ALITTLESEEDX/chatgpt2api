@@ -5,6 +5,7 @@ import { useConfirmDialog } from '@/composables/useConfirmDialog'
 import { useOperationProgressRuntime } from '@/composables/useOperationProgressRuntime'
 import { useToast } from '@/composables/useToast'
 import { errorMessage } from '@/lib/errorMessage'
+import { formatBytes } from '@/views/settings/settingsView'
 
 type SettingsImageStorageRuntimeOptions = {
   requireSavedSettings: (actionLabel: string) => boolean
@@ -72,7 +73,30 @@ export function useSettingsImageStorageRuntime(options: SettingsImageStorageRunt
     }
   }
 
+  // 打开"到期同时删除 R2"前统计现有过期图片，有 R2 副本时必须经用户确认，返回是否允许打开。
+  async function confirmDeleteExpiredRemote(imageRetentionHours: number): Promise<boolean> {
+    let preview
+    try {
+      preview = await settingsApi.previewImageRemoteCleanup({ image_retention_hours: imageRetentionHours })
+    } catch (error) {
+      toast.warning(`过期图片检测失败：${errorMessage(error, '无法统计 R2 上的过期图片')}，未开启`)
+      return false
+    }
+    if (!preview.remote_removed) return true
+    return confirmDialog.ask({
+      title: '确认开启 R2 过期删除',
+      message: [
+        `按当前保留期（${preview.retention_hours} 小时），已有 ${preview.removed} 张过期图片，其中 ${preview.remote_removed} 张在 Cloudflare R2 上（合计约 ${formatBytes(preview.removed_size_bytes)}）。`,
+        '开启并保存后，将立即永久删除这些图片及其 R2 副本，此操作不可恢复，之后每次自动清理也会同步删除 R2。',
+        '是否开启？',
+      ].join('\n'),
+      confirmText: '开启',
+      cancelText: '取消',
+    })
+  }
+
   return {
+    confirmDeleteExpiredRemote,
     imageStorageBusy,
     imageStorageTestResult,
     operationProgress,

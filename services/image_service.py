@@ -154,8 +154,15 @@ def _retention_hours(value: int | float | str | None, fallback: int) -> int:
         return max(1, int(fallback))
 
 
-def _retention_cleanup_targets(retention_hours: int) -> list[tuple[str, int]]:
+def _retention_cleanup_targets(
+    retention_hours: int,
+    *,
+    include_remote: bool | None = None,
+) -> list[tuple[str, int, bool]]:
+    """返回 (path, size, purge)；purge 表示该图在 R2 上有副本，需连同 R2 对象一起删除。"""
     hours = _retention_hours(retention_hours, config.image_retention_hours)
+    if include_remote is None:
+        include_remote = bool(config.get_image_storage_settings().get("s3_delete_expired"))
     raw_items = image_storage_service.list_items("", refresh_index=True, verify_existing=True)
     projection = gallery_page(
         raw_items,
@@ -165,20 +172,26 @@ def _retention_cleanup_targets(retention_hours: int) -> list[tuple[str, int]]:
         limit=0,
         offset=0,
         media_type="all",
+        expire_remote=include_remote,
     )
     return [
-        (str(item["path"]), int(item["size_bytes"]))
+        (str(item["path"]), int(item["size_bytes"]), bool(include_remote and item["s3"]))
         for item in projection["items"]
-        if item["expired"] and item["local"]
+        if item["expired"] and (item["local"] or (include_remote and item["s3"]))
     ]
 
 
-def preview_image_retention_cleanup(retention_hours: int | None = None) -> dict[str, int | bool]:
+def preview_image_retention_cleanup(
+    retention_hours: int | None = None,
+    *,
+    include_remote: bool | None = None,
+) -> dict[str, int | bool]:
     hours = _retention_hours(retention_hours, config.image_retention_hours)
-    targets = _retention_cleanup_targets(hours)
+    targets = _retention_cleanup_targets(hours, include_remote=include_remote)
     return {
         "removed": len(targets),
-        "removed_size_bytes": sum(size for _, size in targets),
+        "removed_size_bytes": sum(size for _, size, _ in targets),
+        "remote_removed": sum(1 for _, _, purge in targets if purge),
         "retention_hours": hours,
         "dry_run": True,
     }
@@ -189,7 +202,8 @@ def cleanup_image_retention(retention_hours: int | None = None) -> dict[str, int
     targets = _retention_cleanup_targets(hours)
     removed = 0
     removed_size_bytes = 0
-    target_sizes = dict(targets)
+    target_sizes = {rel: size for rel, size, purge in targets if not purge}
+    purge_sizes = {rel: size for rel, size, purge in targets if purge}
     removed_local = image_storage_service.delete_local_copies(list(target_sizes))
     for rel, remote_remains in removed_local.items():
         removed += 1
@@ -203,9 +217,16 @@ def cleanup_image_retention(retention_hours: int | None = None) -> dict[str, int
             if thumbnail.is_file():
                 thumbnail.unlink()
         remove_tags(rel)
-    cleanup_image_thumbnails()
-    _cleanup_empty_dirs(config.images_dir)
-    _cleanup_empty_dirs(config.image_thumbnails_dir)
+    try:
+        if purge_sizes:
+            # 与手动删除同一路径：本地、R2、索引、缩略图、标签一起清理，R2 失败时由 tombstone 重试。
+            purged = delete_images(list(purge_sizes))["removed"]
+            removed += purged
+            removed_size_bytes += sum(purge_sizes.values())
+    finally:
+        cleanup_image_thumbnails()
+        _cleanup_empty_dirs(config.images_dir)
+        _cleanup_empty_dirs(config.image_thumbnails_dir)
     return {
         "removed": removed,
         "removed_size_bytes": removed_size_bytes,

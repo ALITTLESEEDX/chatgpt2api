@@ -287,6 +287,7 @@ _FIELD_SPECS: dict[str, dict[str, Any]] = {
     "image_storage.s3_secret_access_key": _field_metadata("", sensitive=True),
     "image_storage.s3_bucket": _field_metadata(""),
     "image_storage.s3_prefix": _field_metadata(DEFAULT_IMAGE_STORAGE["s3_prefix"]),
+    "image_storage.s3_delete_expired": _field_metadata(False),
     "image_storage.public_base_url": _field_metadata(""),
     "genbox_push.enabled": _field_metadata(False),
     "genbox_push.base_url": _field_metadata(""),
@@ -660,6 +661,7 @@ class SettingsManagementService:
                     _text(image_storage.get("s3_prefix"), str(DEFAULT_IMAGE_STORAGE["s3_prefix"]))
                     or str(DEFAULT_IMAGE_STORAGE["s3_prefix"])
                 ),
+                s3_delete_expired=_bool(image_storage.get("s3_delete_expired"), False),
                 public_base_url=_url(image_storage.get("public_base_url")),
             ),
             genbox_push=GenBoxPushSettings(

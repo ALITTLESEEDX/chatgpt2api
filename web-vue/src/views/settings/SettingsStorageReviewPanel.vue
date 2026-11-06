@@ -110,6 +110,18 @@
             placeholder="chatgpt2api/images"
           />
         </FormField>
+
+        <div class="settings-check-grid settings-check-grid--single">
+          <div class="settings-check-item">
+            <div class="settings-check-control">
+              <Checkbox
+                :model-value="imageStorage.s3_delete_expired"
+                :disabled="!imageStorage.enabled || fieldReadOnly('image_storage.s3_delete_expired')"
+                @update:model-value="setDeleteExpired"
+              >保留期到期后同时删除 R2 上的图片（不可恢复）</Checkbox>
+            </div>
+          </div>
+        </div>
       </template>
 
       <FormField label="公开访问前缀">
@@ -208,6 +220,7 @@ const props = defineProps<{
   fields: SettingsFields
   imageStorageBusy: string
   imageStorageTestResult: ImageStorageTestResult | null
+  confirmDeleteExpiredRemote: (imageRetentionHours: number) => Promise<boolean>
 }>()
 
 defineEmits<{
@@ -222,6 +235,12 @@ const imageStorageModeOptions = computed(() => (
 ))
 const isWebdavMode = computed(() => ['webdav', 'both'].includes(imageStorage.value.mode))
 const isS3Mode = computed(() => ['s3', 'local_s3'].includes(imageStorage.value.mode))
+
+async function setDeleteExpired(value: boolean | string | number) {
+  const next = Boolean(value)
+  if (next && !(await props.confirmDeleteExpiredRemote(props.settings.image_retention_hours))) return
+  imageStorage.value.s3_delete_expired = next
+}
 </script>
 
 <style scoped>

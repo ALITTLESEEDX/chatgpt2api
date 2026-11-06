@@ -28,6 +28,14 @@ export interface RetentionCleanupRequest {
   image_retention_hours?: number
 }
 
+export interface ImageRemoteCleanupPreview {
+  removed: number
+  removed_size_bytes: number
+  remote_removed: number
+  retention_hours: number
+  dry_run: boolean
+}
+
 export interface RetentionCleanupSection {
   removed: number
   kept?: number
@@ -188,6 +196,9 @@ export const settingsApi = {
 
   previewRetentionCleanup: (payload: RetentionCleanupRequest = {}) =>
     apiClient.post<RetentionCleanupRequest, RetentionCleanupResult>('/api/settings/retention-cleanup/preview', payload),
+
+  previewImageRemoteCleanup: (payload: RetentionCleanupRequest = {}) =>
+    apiClient.post<RetentionCleanupRequest, ImageRemoteCleanupPreview>('/api/settings/image-remote-cleanup/preview', payload),
 
   runRetentionCleanup: (payload: RetentionCleanupRequest = {}) =>
     apiClient.post<RetentionCleanupRequest, RetentionCleanupResult>('/api/settings/retention-cleanup/run', payload),

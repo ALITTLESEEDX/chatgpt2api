@@ -85,12 +85,13 @@ def gallery_row(
     base_url: str,
     tags: list[str],
     retention_hours: int,
+    expire_remote: bool = False,
 ) -> dict[str, Any]:
     path = _text(item.get("path") or item.get("rel") or item.get("name"))
     filename = _text(item.get("name") or item.get("filename")) or Path(path).name
     storage, local, webdav, s3, s3_key = _storage(item)
     expired, expires_at, expires_in_seconds = (
-        _expiry(item, retention_hours) if local else (False, None, None)
+        _expiry(item, retention_hours) if local or (expire_remote and s3) else (False, None, None)
     )
     return {
         "id": path,
@@ -155,6 +156,7 @@ def gallery_page(
     genbox_push_enabled: bool = False,
     tag: str = "",
     search: str = "",
+    expire_remote: bool = False,
 ) -> dict[str, Any]:
     rows = [
         gallery_row(
@@ -162,6 +164,7 @@ def gallery_page(
             base_url=base_url,
             tags=tags_by_path.get(_text(item.get("path") or item.get("rel")), []),
             retention_hours=retention_hours,
+            expire_remote=expire_remote,
         )
         for item in raw_items
     ]

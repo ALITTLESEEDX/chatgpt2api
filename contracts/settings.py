@@ -67,6 +67,7 @@ class _ImageStorageFields(_StrictModel):
     s3_secret_access_key: str = ""
     s3_bucket: str = ""
     s3_prefix: str = "chatgpt2api/images"
+    s3_delete_expired: bool = False
     public_base_url: str = ""
 
 

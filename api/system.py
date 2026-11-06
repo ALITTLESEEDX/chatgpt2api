@@ -58,6 +58,7 @@ from services.image_service import (
     get_image_response,
     get_thumbnail_response,
     list_images,
+    preview_image_retention_cleanup,
     storage_stats,
 )
 from services.dashboard_view import build_dashboard_view
@@ -149,7 +150,7 @@ def _retention_cleanup_payload(body: RetentionCleanupRequest | None = None, *, d
 
 
 def _notify_retention_cleanup_if_changed(changed_fields: list[str]) -> None:
-    retention_fields = {"log_retention_hours", "image_retention_hours"}
+    retention_fields = {"log_retention_hours", "image_retention_hours", "image_storage.s3_delete_expired"}
     if retention_fields.intersection(changed_fields):
         retention_cleanup_coordinator.notify_retention_change()
 
@@ -258,6 +259,15 @@ def create_router(app_version: str) -> APIRouter:
     async def preview_retention_cleanup(body: RetentionCleanupRequest, authorization: str | None = Header(default=None)):
         require_admin(authorization)
         return await run_in_threadpool(_retention_cleanup_payload, body, dry_run=True)
+
+    @router.post("/api/settings/image-remote-cleanup/preview")
+    async def preview_image_remote_cleanup(body: RetentionCleanupRequest, authorization: str | None = Header(default=None)):
+        require_admin(authorization)
+        return await run_in_threadpool(
+            preview_image_retention_cleanup,
+            body.image_retention_hours or config.image_retention_hours,
+            include_remote=True,
+        )
 
     @router.post("/api/settings/retention-cleanup/run")
     async def run_retention_cleanup(body: RetentionCleanupRequest, authorization: str | None = Header(default=None)):

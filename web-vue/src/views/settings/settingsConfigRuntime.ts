@@ -237,11 +237,16 @@ export function useSettingsConfigRuntime(options: SettingsConfigRuntimeOptions) 
     })
     if (!confirmed) return
 
+    // 刚打开 R2 过期删除时，用户已在打开开关时确认过，保存触发的清理不再二次询问。
+    const enablingRemoteDelete = Boolean(
+      localSettings.value.image_storage?.s3_delete_expired &&
+        !savedSettingsBaseline.value?.image_storage?.s3_delete_expired,
+    )
     isSaving.value = true
     try {
       await persistSettings(true)
       await offerAccountCleanup()
-      await offerRetentionCleanup()
+      if (!enablingRemoteDelete) await offerRetentionCleanup()
     } catch (error) {
       if ((error as { status?: number })?.status === 409) {
         let revisionRefreshed = false

@@ -53,6 +53,7 @@ DEFAULT_IMAGE_STORAGE = {
     "s3_secret_access_key": "",
     "s3_bucket": "",
     "s3_prefix": "chatgpt2api/images",
+    "s3_delete_expired": False,
     "public_base_url": "",
 }
 
@@ -199,6 +200,8 @@ def _normalize_image_storage_settings(value: object) -> dict[str, object]:
         "s3_secret_access_key": str(source.get("s3_secret_access_key") or "").strip(),
         "s3_bucket": str(source.get("s3_bucket") or "").strip(),
         "s3_prefix": s3_prefix or str(DEFAULT_IMAGE_STORAGE["s3_prefix"]),
+        # 删除 R2 对象不可逆，仅在 R2 模式下生效，切到其他模式即自动关闭。
+        "s3_delete_expired": mode in {"s3", "local_s3"} and _normalize_bool(source.get("s3_delete_expired"), False),
         "public_base_url": str(source.get("public_base_url") or "").strip().rstrip("/"),
     })
     return normalized

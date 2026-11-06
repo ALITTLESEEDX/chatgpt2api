@@ -116,6 +116,7 @@ export interface Settings {
     has_s3_secret_access_key: boolean
     s3_bucket: string
     s3_prefix: string
+    s3_delete_expired: boolean
     public_base_url: string
   }
   genbox_push: SettingsGenBoxPush

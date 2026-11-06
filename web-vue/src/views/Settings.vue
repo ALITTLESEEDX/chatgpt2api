@@ -86,6 +86,7 @@
         :fields="settingsFields"
         :image-storage-busy="imageStorageBusy"
         :image-storage-test-result="imageStorageTestResult"
+        :confirm-delete-expired-remote="imageStorageRuntime.confirmDeleteExpiredRemote"
         @test-storage="testImageStorageConnection"
         @sync-storage="syncImageStorageFiles"
       />

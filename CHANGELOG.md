@@ -2,6 +2,7 @@
 
 ## Unreleased
 
++ [新增] 图片存储设置新增「保留期到期后同时删除 R2 上的图片」开关（`image_storage.s3_delete_expired`，默认关，仅 R2 / 本地 + R2 模式生效）：开启后自动清理对到期图片改为本地、R2、索引一并删除（含仅在 R2 的图片）；打开开关时先统计现有过期图片，有 R2 副本则需确认，确认后保存即立即清理。新增 `POST /api/settings/image-remote-cleanup/preview`；磁盘空间不足触发的清理仍只删本地副本。
 + [新增] 网页图片模型新增 `gpt-image-2.6-flare` 与 `gpt-image-2.6-sunburst`：`/v1/models`、控制台模型目录与图片接口统一接受这组名称，且 2.5 / 2.6 的 `-flare` / `-sunburst` 在网页图片请求中原样透传上游真实 slug，能真正选中型号（free 网页账号实测可出图）；`gpt-image-2` 与本地兼容别名 `gpt-image-2.5` 仍发 `auto`，不新增裸名 `gpt-image-2.6`。
 + [修复] 图片下载遇到对象存储 429 / 5xx / 连接中断时按 1 / 2 / 4 秒退避重试（最多 4 次，`Retry-After` 上限 10 秒）；404 等客户端错误不重试，避免图片已生成、额度已扣却整单失败。
 + [优化] 图片存储与响应按文件头识别真实格式（PNG / JPEG / WebP / GIF），不再一律命名为 `.png` 并以 `image/png` 返回；WebDAV / S3 上传与聊天 markdown 的 data URI 使用识别出的 MIME。

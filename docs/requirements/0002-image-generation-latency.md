@@ -78,8 +78,8 @@ Ordered by priority. Status is tracked per item.
 | P0-1 | Close image SSE streams without waiting for upstream; defer curl handle close to the worker's completion | ~10 s per attempt | deployed, pending 24 h verification |
 | P0-2 | Run the hide-conversation PATCH in a bounded background runner that owns the backend lifetime | ~5.6 s per success | deployed, pending 24 h verification |
 | P0-3 | Poll cadence: return as soon as every found file id sits in a `finished_successfully` message (code); production settings `image_poll_initial_wait_secs` 3, `image_poll_interval_secs` 2, `image_settle_secs` 2 | ~6–8 s | deployed, pending 24 h verification |
-| P1-4 | Skip the remote account preflight when the local account check is fresh | ~1.5 s | planned |
-| P1-5 | Upload reference images concurrently and overlap with bootstrap/requirements; cache bootstrap PoW sources per egress | edits ~1.5 s p50, ~5 s p90 | planned |
+| P1-4 | Skip the remote account preflight when the local account check is fresh | ~1.5 s | deferred: can turn a 1.6 s saving into a failed attempt + switch when an account just ran out of image quota; needs data on how often the preflight rejects accounts |
+| P1-5 | Upload multiple reference images concurrently on the shared session (curl_cffi keeps a curl handle per thread and a locked cookie jar); single image unchanged | multi-image edits: 2 images ~2 s, 5 images ~5 s (p90 ~9 s) | implemented, not deployed |
 
 P0-1 and P0-3 interact: once the stream closes ~10 s earlier, polling starts
 earlier, and the fixed 5 s cadence absorbs part of the saving until P0-3 lands.
@@ -149,6 +149,16 @@ None.
   any other status keep the settle check. Shorter cadence raises conversation
   reads per image (~2 s apart); `image_poll_retry` events are the 429 signal to
   watch after deploy.
+- P1-5: parallel uploads open up to 5 connections through the same egress
+  for one request, as the web client does. Upstream limits uploads per account
+  by count (429 `upload_protection_limit_exceeded`, 4 h window, reached by a
+  ~40-upload benchmark in 10 minutes); parallelism does not change the count.
+  `tests/test_image_upload_parallel.py` pins the per-thread curl handle
+  assumption. Results are collected in
+  image order, so the first failing image raises the same error the serial
+  loop raised; sibling sessions are always closed. Overlapping uploads with
+  bootstrap/requirements and caching bootstrap were dropped: both would share
+  or skip the session that receives Cloudflare cookies, for ~1 s.
 - Production settings applied 2026-11-06 via `PATCH /api/settings`:
   `image_poll_timeout_secs` 75, `image_poll_initial_wait_secs` 3,
   `image_poll_interval_secs` 2, `image_settle_secs` 2.
@@ -177,6 +187,8 @@ None.
 | Status-based hit, partial status excluded, settle fallback | unit | `tests/test_image_latency_p0.py` poll tests pass | passed |
 | Existing behaviour | regression | `uv run --frozen pytest`: 36 passed, 1 failed (`test_web_image_model_slug_mapping`: stale expected model list after the v3.2.4 merge added `gpt-image-2.6`; slug mappings verified correct by hand) | passed |
 | Production latency (early) | manual | 2026-11-06 after deploy `cb6519c`: 10 direct `/v1/images/generations` calls (2.6-sunburst, 2.5) all 200 in 17.2–23.1 s (baseline p50 41–44 s); `sse_last_gap_ms` ≈ 0; every hit via `image_poll_hit_final`; total − stream ≈ account wait (cleanup off path); 2 Studio tasks 200 / success in ~30 s right after restart (cold solver: `requirements_ms` 4 s) | passed |
+| Parallel upload order, concurrency, failure, shared-session threading | unit | `tests/test_image_upload_parallel.py` (4 tests) pass | passed |
+| Parallel upload against upstream | manual | out-of-band process in the production container, not deployed: 3 × 1.4 MB images on a fresh account: serial 1.7–2.1 s vs parallel 0.63–0.76 s (back-to-back bursts on one account slowed as the upload limit approached); full 3-reference edit (`gpt-image-2.5`) succeeded twice with upload stage 0.95–1.59 s (production 3-image p50 3.3 s) | passed |
 | Production rates over 24 h | manual | success / text_review / `image_poll_timeout` / `image_poll_retry` rates vs baseline | pending |
 
 ## Documentation and CHANGELOG impact

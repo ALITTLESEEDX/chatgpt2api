@@ -82,6 +82,7 @@ _IMAGE_DOWNLOAD_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _IMAGE_DOWNLOAD_ATTEMPTS = 4
 _IMAGE_DOWNLOAD_BACKOFF_SECS = 1.0
 _IMAGE_DOWNLOAD_MAX_WAIT_SECS = 10.0
+_IMAGE_UPLOAD_CONCURRENCY = 5
 DEFAULT_IMPERSONATE = "chrome146"
 LEGACY_IMPERSONATES = {"chrome110", "edge101"}
 # 请求头里的浏览器身份必须与 TLS 指纹一致：curl_cffi 的 chrome146 发的是 Chrome 146 的 ClientHello，
@@ -1413,6 +1414,21 @@ class OpenAIBackendAPI:
             "width": width,
             "height": height,
         }
+
+    def _upload_images(self, images: list[str]) -> list[Dict[str, Any]]:
+        """Upload reference images; several images go up in parallel like the web client.
+
+        curl_cffi sessions keep a curl handle per thread and a locked cookie jar,
+        so the shared session is safe to use from the pool (get_user_info relies
+        on the same property).
+        """
+        names = [f"image_{idx}.png" for idx in range(1, len(images) + 1)]
+        if len(images) <= 1:
+            return [self._upload_image(image, name) for image, name in zip(images, names)]
+        with ThreadPoolExecutor(max_workers=min(len(images), _IMAGE_UPLOAD_CONCURRENCY)) as pool:
+            futures = [pool.submit(self._upload_image, image, name) for image, name in zip(images, names)]
+            # result() in image order keeps the reference order and raises the first failure like the serial loop.
+            return [future.result() for future in futures]
 
     def _start_image_generation(self, prompt: str, requirements: ChatRequirements, conduit_token: str, model: str,
                                 references: Optional[list[Dict[str, Any]]] = None) -> requests.Response:
@@ -3803,7 +3819,7 @@ class OpenAIBackendAPI:
         if not self.access_token:
             raise RuntimeError("access_token is required for image endpoints")
         self._report_progress("uploading")
-        references = [self._upload_image(image, f"image_{idx}.png") for idx, image in enumerate(images, start=1)]
+        references = self._upload_images(images)
         self._report_progress("bootstrapping")
         self._bootstrap()
         self._report_progress("getting_token")

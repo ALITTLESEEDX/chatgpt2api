@@ -32,7 +32,7 @@ requirements may move to `archive/` after links and this index are updated.
 - [`0001-image-gif-output.md`](0001-image-gif-output.md) — GIF output and
   gpt-image-2.6 compatibility (`implementing`).
 - [`0002-image-generation-latency.md`](0002-image-generation-latency.md) —
-  Image generation latency, stability first (`implementing`).
+  Image generation latency, stability first (`pending-verification`).
 
 PRDs are planning evidence, never proof that the product already behaves as
 described.

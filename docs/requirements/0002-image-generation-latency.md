@@ -1,6 +1,6 @@
 # 0002: Image generation latency
 
-Status: implementing
+Status: pending-verification
 
 - Owner: unassigned
 - Created: 2026-11-06
@@ -75,9 +75,9 @@ Ordered by priority. Status is tracked per item.
 
 | Item | Change | Expected saving | Status |
 | --- | --- | --- | --- |
-| P0-1 | Close image SSE streams without waiting for upstream; defer curl handle close to the worker's completion | ~10 s per attempt | implemented, pending production verification |
-| P0-2 | Run the hide-conversation PATCH in a bounded background runner that owns the backend lifetime | ~5.6 s per success | implemented, pending production verification |
-| P0-3 | Poll cadence: return as soon as every found file id sits in a `finished_successfully` message (code); production settings `image_poll_initial_wait_secs` 3, `image_poll_interval_secs` 2, `image_settle_secs` 2 | ~6–8 s | implemented, pending production verification |
+| P0-1 | Close image SSE streams without waiting for upstream; defer curl handle close to the worker's completion | ~10 s per attempt | deployed, pending 24 h verification |
+| P0-2 | Run the hide-conversation PATCH in a bounded background runner that owns the backend lifetime | ~5.6 s per success | deployed, pending 24 h verification |
+| P0-3 | Poll cadence: return as soon as every found file id sits in a `finished_successfully` message (code); production settings `image_poll_initial_wait_secs` 3, `image_poll_interval_secs` 2, `image_settle_secs` 2 | ~6–8 s | deployed, pending 24 h verification |
 | P1-4 | Skip the remote account preflight when the local account check is fresh | ~1.5 s | planned |
 | P1-5 | Upload reference images concurrently and overlap with bootstrap/requirements; cache bootstrap PoW sources per egress | edits ~1.5 s p50, ~5 s p90 | planned |
 
@@ -149,6 +149,9 @@ None.
   any other status keep the settle check. Shorter cadence raises conversation
   reads per image (~2 s apart); `image_poll_retry` events are the 429 signal to
   watch after deploy.
+- Production settings applied 2026-11-06 via `PATCH /api/settings`:
+  `image_poll_timeout_secs` 75, `image_poll_initial_wait_secs` 3,
+  `image_poll_interval_secs` 2, `image_settle_secs` 2.
 - **Poll window shift.** The poll budget (`image_poll_timeout_secs`, effective
   60 s in production) starts when the SSE phase ends. P0-1 moves that start
   ~10 s earlier, shrinking the absolute tolerance for slow renders by ~10 s.
@@ -173,7 +176,8 @@ None.
 | Cleanup hand-off and fallback | unit | `tests/test_image_latency_p0.py` cleanup tests (background, full runner, disabled) pass | passed |
 | Status-based hit, partial status excluded, settle fallback | unit | `tests/test_image_latency_p0.py` poll tests pass | passed |
 | Existing behaviour | regression | `uv run --frozen pytest`: 36 passed, 1 failed (`test_web_image_model_slug_mapping`: stale expected model list after the v3.2.4 merge added `gpt-image-2.6`; slug mappings verified correct by hand) | passed |
-| Production latency and rates | manual | Call Record metrics before/after over 24 h | pending |
+| Production latency (early) | manual | 2026-11-06 after deploy `cb6519c`: 10 direct `/v1/images/generations` calls (2.6-sunburst, 2.5) all 200 in 17.2–23.1 s (baseline p50 41–44 s); `sse_last_gap_ms` ≈ 0; every hit via `image_poll_hit_final`; total − stream ≈ account wait (cleanup off path); 2 Studio tasks 200 / success in ~30 s right after restart (cold solver: `requirements_ms` 4 s) | passed |
+| Production rates over 24 h | manual | success / text_review / `image_poll_timeout` / `image_poll_retry` rates vs baseline | pending |
 
 ## Documentation and CHANGELOG impact
 

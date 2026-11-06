@@ -812,6 +812,7 @@ class ImageTaskService:
                 status=TASK_STATUS_SUCCESS,
                 data=data,
                 usage=usage,
+                partial_failures=result.get("partial_failures") or [],
                 error="",
                 duration_ms=duration_ms,
                 **_clear_task_details(),
@@ -989,6 +990,9 @@ class ImageTaskService:
             usage = item.get("usage")
             if isinstance(usage, dict):
                 task["usage"] = usage
+            partial_failures = item.get("partial_failures")
+            if isinstance(partial_failures, list):
+                task["partial_failures"] = partial_failures
             _copy_task_details(item, task)
             if status == TASK_STATUS_ERROR:
                 stored_error = _clean(item.get("error"))

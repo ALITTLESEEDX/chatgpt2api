@@ -94,6 +94,22 @@ def _results(raw: Mapping[str, object]) -> list[dict[str, Any]]:
     return [asset for item in source if (asset := _asset(item)) is not None]
 
 
+def _partial_failures(raw: Mapping[str, object]) -> list[dict[str, Any]]:
+    source = raw.get("partial_failures")
+    if not isinstance(source, list):
+        return []
+    return [
+        {
+            "slot": item.get("slot"),
+            "code": _text(item.get("code")),
+            "message": _text(item.get("message")),
+            "status_code": item.get("status_code"),
+        }
+        for item in source
+        if isinstance(item, Mapping) and _text(item.get("message"))
+    ]
+
+
 def _status(raw: Mapping[str, object], result_count: int, requested_count: int) -> str:
     raw_status = _text(raw.get("status")).lower()
     if raw_status in {"queued", "running"}:
@@ -184,6 +200,7 @@ def image_task_row(
         ),
         "error_code": error_code,
         "public_error": public_error,
+        "partial_failures": _partial_failures(raw),
         "results": results,
         "actions": {
             "resume_poll": status == "failed" and raw.get("can_resume_poll") is True,

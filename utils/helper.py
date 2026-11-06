@@ -26,9 +26,10 @@ WEB_IMAGE_MODELS = (
     "gpt-image-2.5",
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
+    "gpt-image-2.6",
 )
 # 上游模型目录中存在同名 slug、需要原样透传的 Web 图片模型。
-# 其余 Web 名称（`gpt-image-2`、本地兼容别名 `gpt-image-2.5`）没有独立 slug，统一发送 `auto`。
+# 其余 Web 名称（`gpt-image-2`、本地兼容别名 `gpt-image-2.5` / `gpt-image-2.6`）没有独立 slug，统一发送 `auto`。
 WEB_IMAGE_MODEL_SLUGS = frozenset({
     "gpt-image-2.5-flare",
     "gpt-image-2.5-sunburst",
@@ -702,6 +703,6 @@ def build_chat_image_markdown_content(image_result: dict[str, object]) -> str:
             continue
         b64_json = str(item.get("b64_json") or "").strip()
         if b64_json:
-            mime = detect_base64_image_mime(b64_json)
+            mime = str(item.get("mime_type") or "").strip() or detect_base64_image_mime(b64_json)
             markdown_images.append(f"![image_{index}](data:{mime};base64,{b64_json})")
     return "\n\n".join(markdown_images) if markdown_images else "Image generation completed."

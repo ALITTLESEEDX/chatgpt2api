@@ -44,8 +44,11 @@ from services.config import (
     DEFAULT_PROXY_RUNTIME,
     DEFAULT_PROXY_RUNTIME_USER_AGENT,
     DEFAULT_THIRD_PARTY_APPS,
+    DEFAULT_GIF_MODELS,
+    _normalize_gif_models,
     config,
 )
+from utils.helper import PUBLIC_IMAGE_MODELS
 
 
 SETTINGS_SCHEMA_VERSION = 1
@@ -70,6 +73,7 @@ _MANAGED_TOP_LEVEL_FIELDS = (
     "image_remove_conversation_after_result",
     "image_settle_enabled",
     "image_settle_secs",
+    "gif_models",
     "auto_remove_invalid_accounts",
     "auto_remove_rate_limited_accounts",
     "log_levels",
@@ -266,6 +270,7 @@ _FIELD_SPECS: dict[str, dict[str, Any]] = {
     "image_remove_conversation_after_result": _field_metadata(False),
     "image_settle_enabled": _field_metadata(True),
     "image_settle_secs": _numeric_field_metadata("image_settle_secs"),
+    "gif_models": _field_metadata(DEFAULT_GIF_MODELS, options=tuple(sorted(PUBLIC_IMAGE_MODELS))),
     "auto_remove_invalid_accounts": _field_metadata(True),
     "auto_remove_rate_limited_accounts": _field_metadata(False),
     "log_levels": _field_metadata([], options=("debug", "info", "warning", "error")),
@@ -538,6 +543,11 @@ class SettingsManagementService:
             if level in {"debug", "info", "warning", "error"}
         ]
         sensitive_words = list(dict.fromkeys(_string_list(effective.get("sensitive_words"))))
+        gif_models = [
+            model
+            for model in _normalize_gif_models(effective.get("gif_models"))
+            if model in PUBLIC_IMAGE_MODELS
+        ]
 
         return SettingsValues(
             proxy_runtime=ProxyRuntimeSettings(
@@ -625,6 +635,7 @@ class SettingsManagementService:
                 "image_settle_secs",
                 effective.get("image_settle_secs"),
             ),
+            gif_models=gif_models,
             auto_remove_invalid_accounts=_bool(effective.get("auto_remove_invalid_accounts"), True),
             auto_remove_rate_limited_accounts=_bool(
                 effective.get("auto_remove_rate_limited_accounts"),
@@ -742,6 +753,13 @@ class SettingsManagementService:
         updates: dict[str, Any] = {}
         for key, value in values.items():
             if key not in _MANAGED_TOP_LEVEL_FIELDS:
+                continue
+            if key == "gif_models":
+                updates[key] = [
+                    model
+                    for model in _normalize_gif_models(value)
+                    if model in PUBLIC_IMAGE_MODELS
+                ]
                 continue
             if isinstance(value, Mapping):
                 base = stored.get(key)

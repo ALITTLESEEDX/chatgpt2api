@@ -21,7 +21,13 @@ from services.json_file import read_json_object, write_json_file
 from services.r2_client import CloudflareR2Client, R2Error
 from services.storage.file_lock import interprocess_lock
 from utils.timezone import beijing_datetime_from_timestamp, beijing_now, beijing_now_str
-from utils.image_format import IMAGE_MIME_BY_EXTENSION, detect_image_extension, image_mime_for_path
+from utils.image_format import (
+    IMAGE_MIME_BY_EXTENSION,
+    detect_image_extension,
+    detect_image_mime,
+    image_extension_for_mime,
+    image_mime_for_path,
+)
 
 IMAGE_INDEX_FILE = DATA_DIR / "image_index.json"
 IMAGE_INDEX_LOCK = Lock()
@@ -117,6 +123,11 @@ def _image_dimensions(payload: bytes) -> tuple[int, int] | None:
         return None
 
 
+def image_media_type(relative_path: str = "", payload: bytes | None = None) -> str:
+    """Return the media type for an image asset without decoding/re-encoding it."""
+    return detect_image_mime(payload, image_mime_for_path(relative_path))
+
+
 def _is_image_rel(path: str) -> bool:
     try:
         safe_rel = normalize_image_relative_path(path)
@@ -196,10 +207,15 @@ class WebDAVClient:
             if response.status_code >= 400:
                 raise ImageStorageError(f"WebDAV MKCOL failed: HTTP {response.status_code}")
 
-    def put(self, rel: str, payload: bytes, content_type: str = "image/png") -> str:
+    def put(self, rel: str, payload: bytes, content_type: str | None = None) -> str:
         self.ensure_dirs(rel)
         url = self.remote_url(rel)
-        self._request("PUT", url, data=payload, headers={"Content-Type": content_type})
+        self._request(
+            "PUT",
+            url,
+            data=payload,
+            headers={"Content-Type": content_type or image_media_type(rel, payload)},
+        )
         return url
 
     def get(self, rel: str) -> bytes:
@@ -500,9 +516,10 @@ class ImageStorageService:
             f"{normalize_image_relative_path(rel)}"
         )
 
-    def make_relative_path(self, image_data: bytes) -> str:
+    def make_relative_path(self, image_data: bytes, mime_type: str | None = None) -> str:
         file_hash = hashlib.md5(image_data).hexdigest()
-        filename = f"{int(time.time())}_{file_hash}{detect_image_extension(image_data)}"
+        extension = image_extension_for_mime(mime_type, "") or detect_image_extension(image_data)
+        filename = f"{int(time.time())}_{file_hash}{extension}"
         now = beijing_now()
         relative_dir = Path(now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
         return f"{relative_dir.as_posix()}/{filename}"
@@ -512,10 +529,12 @@ class ImageStorageService:
         image_data: bytes,
         base_url: str | None = None,
         *,
+        mime_type: str | None = None,
         deadline_monotonic: float | None = None,
     ) -> StoredImage:
         _raise_if_save_deadline_elapsed(deadline_monotonic)
-        rel = self.make_relative_path(image_data)
+        resolved_mime_type = image_media_type(payload=image_data) if not mime_type else str(mime_type).strip().lower()
+        rel = self.make_relative_path(image_data, resolved_mime_type)
         with self._item_guard(rel):
             # Once the physical mutation starts, finish the catalog commit so a
             # deadline cannot leave an unindexed local or remote asset behind.
@@ -538,7 +557,7 @@ class ImageStorageService:
             if mode in {"webdav", "both"}:
                 client = WebDAVClient(self.settings())
                 try:
-                    remote_url = client.put(rel, image_data, content_type=image_mime_for_path(rel))
+                    remote_url = client.put(rel, image_data, content_type=resolved_mime_type)
                     stored_webdav = True
                 finally:
                     client.session.close()
@@ -546,7 +565,7 @@ class ImageStorageService:
             if mode in {"s3", "local_s3"}:
                 client = CloudflareR2Client(_r2_settings(self.settings()), object_label="图片")
                 try:
-                    uploaded = client.upload_bytes(rel, image_data, content_type=image_mime_for_path(rel))
+                    uploaded = client.upload_bytes(rel, image_data, content_type=resolved_mime_type)
                     s3_key = str(uploaded.get("key") or "")
                     stored_s3 = True
                 finally:

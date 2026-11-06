@@ -28,18 +28,27 @@ explicit configured overrides. The console and `/v1/models` consume the same
 catalog; listing models does not query upstream or append upstream-only entries.
 
 `utils.helper.WEB_IMAGE_MODELS` owns the built-in Web image identifiers:
-`gpt-image-2`, `gpt-image-2.6-flare`, `gpt-image-2.6-sunburst`,
+`gpt-image-2`, `gpt-image-2.6`, `gpt-image-2.6-flare`, `gpt-image-2.6-sunburst`,
 `gpt-image-2.5`, `gpt-image-2.5-flare`, and `gpt-image-2.5-sunburst`. Model
 validation and `ModelCatalogService` consume this list; Studio consumes the
-backend catalog. Explicit catalog configuration still takes precedence over the
-built-in list. No `exact` aliases are added.
+backend catalog. Explicit catalog configuration still takes precedence over
+the built-in list. No `exact` aliases are added.
 
-`gpt-image-2` and the local compatibility alias `gpt-image-2.5` have no upstream
+The persisted `gif_models` setting controls GIF eligibility per image model.
+It defaults to the three 2.6 aliases and is projected through `/api/settings`.
+Image requests carry optional `output_format`, `frame_count`, and
+`frame_duration_ms` values through the shared image execution request.
+`output_format` accepts `gif`, `png`, `jpg`/`jpeg`, and `webp`. GIF bytes bypass
+raster upscaling/re-encoding and are stored with `.gif` and `image/gif`; the
+other explicit formats are converted locally before storage. Existing `n` and
+multi-image behavior is unchanged.
+
+`gpt-image-2` and the local compatibility aliases `gpt-image-2.5` / `gpt-image-2.6` have no upstream
 slug and are sent as `auto`. The 2.5 / 2.6 `-flare` / `-sunburst` identifiers are
 real upstream slugs (`utils.helper.WEB_IMAGE_MODEL_SLUGS`) and are passed through
 unchanged, so a request selects the corresponding model. Upstream publishes the
-2.6 series as `-flare` and `-sunburst` only, so no bare `gpt-image-2.6` alias is
-added. Existing `gpt-image-2` and Codex routing and the default image model
+2.6 series as `-flare` and `-sunburst` only; the bare `gpt-image-2.6` is a local
+compatibility alias sent as `auto`. Existing `gpt-image-2` and Codex routing and the default image model
 remain unchanged.
 
 ## Domain and persistence ownership

@@ -908,7 +908,7 @@ class OpenAIBackendAPI:
     def _image_model_slug(self, model: str) -> str:
         """把标准图片模型名映射到底层 model slug。
 
-        `gpt-image-2` 与本地兼容别名 `gpt-image-2.5` 在上游模型目录里没有对应 slug，
+        `gpt-image-2` 与本地兼容别名 `gpt-image-2.5` / `gpt-image-2.6` 在上游模型目录里没有对应 slug，
         统一发送官网同款的 `auto`；2.5 / 2.6 的 flare / sunburst 是上游真实 slug，
         原样透传才能选中对应型号。
         """
@@ -1201,11 +1201,19 @@ class OpenAIBackendAPI:
             images: list[str] | None = None,
             size: str | None = None,
             quality: str = "auto",
+            output_format: object = None,
     ) -> Iterator[Dict[str, Any]]:
         if not self.access_token:
             raise RuntimeError("access_token is required for codex image endpoints")
         self._ensure_codex_source_account()
         path = "/backend-api/codex/responses"
+        requested_output_format = {
+            "gif": "gif",
+            "png": "png",
+            "jpg": "jpeg",
+            "jpeg": "jpeg",
+            "webp": "webp",
+        }.get(str(output_format or "").strip().lower(), "png")
         payload = {
             "model": CODEX_RESPONSES_MODEL,
             "instructions": CODEX_RESPONSES_INSTRUCTIONS,
@@ -1217,7 +1225,7 @@ class OpenAIBackendAPI:
                 "action": "edit" if images else "generate",
                 "size": str(size or "1024x1024"),
                 "quality": str(quality or "auto"),
-                "output_format": "png",
+                "output_format": requested_output_format,
             }],
             "tool_choice": {"type": "image_generation"},
             "stream": True,
